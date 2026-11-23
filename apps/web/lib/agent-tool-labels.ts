@@ -20,11 +20,12 @@ export const AGENT_TOOL_LABELS: Record<string, string> = {
   finance_query: "财务",
 };
 
-/** 32 个内部 operation → 业务对象（用户看得懂的词）。 */
+/** 35 个内部 operation → 业务对象（用户看得懂的词）。 */
 export const AGENT_OPERATION_LABELS: Record<string, string> = {
   // order_query
   search_documents: "单号检索",
   search_orders: "销售订单",
+  list_documents: "订单列表筛选",
   get_order_overview: "订单全链路",
   get_order_status: "订单状态",
   get_order_timeline: "订单时间线",
@@ -37,6 +38,7 @@ export const AGENT_OPERATION_LABELS: Record<string, string> = {
   get_sales_returns: "销售退货",
   // procurement_query
   get_purchase_plans: "采购计划",
+  list_overdue_arrivals: "到货超期清单",
   get_purchase_orders: "采购订单",
   get_receipts: "采购到货",
   get_incoming_inspections: "来料检验",
@@ -47,6 +49,7 @@ export const AGENT_OPERATION_LABELS: Record<string, string> = {
   get_outsource_flow: "外协流转",
   // warehouse_query
   get_raw_material_balance: "原料库存",
+  list_low_stock_materials: "库存不足物料清单",
   get_inventory_facts: "成品库存",
   get_material_movements: "物料出入库流水",
   get_finished_goods_qc: "成品质检",

@@ -22,9 +22,9 @@ function backendOperations() {
   return [...source.matchAll(/row\("([a-z_]+)",\s*"([a-z_]+)"/g)].map((match) => ({ tool: match[1], operation: match[2] }));
 }
 
-test("后端 32 项 operation 全部有中文标签，工具名也全部覆盖", () => {
+test("后端 35 项 operation 全部有中文标签，工具名也全部覆盖", () => {
   const operations = backendOperations();
-  assert.equal(operations.length, 32, "后端 operation 数量变了：先确认是否新增了能力");
+  assert.equal(operations.length, 35, "后端 operation 数量变了：先确认是否新增了能力");
   assert.equal(AGENT_OPERATION_LABELS.search_documents, "单号检索", "三类单号的统一入口要叫「单号检索」，不能叫「销售订单」");
 
   const missing = operations.filter(({ operation }) => !AGENT_OPERATION_LABELS[operation]);
