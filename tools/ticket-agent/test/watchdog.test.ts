@@ -119,11 +119,12 @@ test('ceiling 优先于 suspect：两者同时成立时报 ceiling', () => {
   assert.match(describeVerdict(judge(samples, START + 6 * HOUR, START), samples, START + 6 * HOUR, START), /绝对上限/)
 })
 
-test('阈值按文档取等号：事件正好 10 分钟算没进展，CPU 正好 1% / 子进程正好 5% 算有活动', () => {
+test('阈值按文档取等号：事件正好 10 分钟算没进展，CPU 正好 3% / 子进程正好 5% 算有活动', () => {
   const atIdleEdge = sample({ lastEventAgeMs: 10 * MINUTE, cpuPercent: 0.9, maxChildCpuPercent: 0 })
   assert.equal(judge([atIdleEdge, { ...atIdleEdge, at: START + MINUTE }], START + 2 * MINUTE, START), 'suspect')
-  const cpuEdge = sample({ lastEventAgeMs: 10 * MINUTE, cpuPercent: 1, maxChildCpuPercent: 0 })
-  assert.equal(judge([cpuEdge, cpuEdge], START + 2 * MINUTE, START), 'alive', 'CPU 正好 1% 不算「没在干活」')
+  // 地板 3%（真机实测：空转 node 约 1.6%，取 1% 会漏报）。「正好等于」算有活动 —— 严格小于才判死。
+  const cpuEdge = sample({ lastEventAgeMs: 10 * MINUTE, cpuPercent: 3, maxChildCpuPercent: 0 })
+  assert.equal(judge([cpuEdge, cpuEdge], START + 2 * MINUTE, START), 'alive', 'CPU 正好 3% 不算「没在干活」')
   const childEdge = sample({ lastEventAgeMs: 10 * MINUTE, cpuPercent: 0.5, maxChildCpuPercent: 5 })
   assert.equal(judge([childEdge, childEdge], START + 2 * MINUTE, START), 'alive', '子进程正好 5% 不算「没动」')
 })
@@ -134,10 +135,10 @@ test('自定义 opts 生效：idleThresholdMs 1000 + suspectStreak 1', () => {
   assert.equal(judge(samples, START + MINUTE, START, { idleThresholdMs: 1_000, suspectStreak: 1 }), 'suspect')
 })
 
-test('自定义 opts 生效：cpuFloorPercent 调高后，3% 也算没在干活', () => {
+test('自定义 opts 生效：cpuFloorPercent 调高后，同样读数会被判死', () => {
   const slow = sample({ lastEventAgeMs: 12 * MINUTE, cpuPercent: 3, maxChildCpuPercent: 0 })
   const samples = [slow, { ...slow, at: START + MINUTE }]
-  assert.equal(judge(samples, START + 2 * MINUTE, START), 'alive', '默认地板 1%，3% 还算有消耗')
+  assert.equal(judge(samples, START + 2 * MINUTE, START), 'alive', '默认地板 3%，3% 正好算有消耗')
   assert.equal(judge(samples, START + 2 * MINUTE, START, { cpuFloorPercent: 10 }), 'suspect')
 })
 
@@ -181,7 +182,7 @@ test('resolveWatchdogOptions：默认值就是文档里那七个数，可覆盖�
   assert.deepEqual(resolveWatchdogOptions(), DEFAULT_WATCHDOG_OPTIONS)
   assert.equal(DEFAULT_WATCHDOG_OPTIONS.sampleIntervalMs, 60_000, '调度方用它排定时器')
   assert.equal(DEFAULT_WATCHDOG_OPTIONS.idleThresholdMs, 10 * MINUTE)
-  assert.equal(DEFAULT_WATCHDOG_OPTIONS.cpuFloorPercent, 1)
+  assert.equal(DEFAULT_WATCHDOG_OPTIONS.cpuFloorPercent, 3)
   assert.equal(DEFAULT_WATCHDOG_OPTIONS.childCpuFloorPercent, 5)
   assert.equal(DEFAULT_WATCHDOG_OPTIONS.suspectStreak, 2)
   assert.equal(DEFAULT_WATCHDOG_OPTIONS.hardCeilingMs, 6 * HOUR)

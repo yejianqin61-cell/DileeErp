@@ -78,7 +78,13 @@ export interface ResolvedWatchdogOptions {
 export const DEFAULT_WATCHDOG_OPTIONS: ResolvedWatchdogOptions = {
   sampleIntervalMs: 60_000,
   idleThresholdMs: 10 * 60_000,
-  cpuFloorPercent: 1,
+  /**
+   * 3% 而不是 1%：2026-11-23 真机探针实测，一个**完全空转**的 node 进程在 2 vCPU
+   * 服务器上就能吃到约 1.6%（`scripts/probe-sampler.ts`）。用 1% 当门槛的话，
+   * 「父子都闲」的死锁现场会被判成「还在干活」，看门狗永远不报 —— 漏报等于没上线。
+   * 3% 留了余量，同时远低于真干活的量级（编译/测试动辄 80%+）。
+   */
+  cpuFloorPercent: 3,
   childCpuFloorPercent: 5,
   suspectStreak: 2,
   hardCeilingMs: 6 * 3600_000,
