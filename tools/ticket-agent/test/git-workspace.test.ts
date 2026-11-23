@@ -56,6 +56,26 @@ function writeAndCommit(dir: string, name: string, content: string, message: str
   git(dir, 'commit', '-m', message)
 }
 
+/** 某个 rev 是否存在（`rev-parse --verify --quiet` 不存在时退出码非 0）。 */
+function revExists(cwd: string, rev: string): boolean {
+  try {
+    git(cwd, 'rev-parse', '--verify', '--quiet', rev)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 某个 rev 下是否有这个文件。 */
+function revHas(cwd: string, rev: string, file: string): boolean {
+  try {
+    git(cwd, 'cat-file', '-e', `${rev}:${file}`)
+    return true
+  } catch {
+    return false
+  }
+}
+
 test('分支名：票号折成 ticket/T-00XX，非法字符替换掉', () => {
   assert.equal(branchFor('T-0027'), 'ticket/T-0027')
   assert.equal(branchFor('T 0027/x'), 'ticket/T-0027-x')
@@ -114,71 +134,120 @@ test('成功收尾：--no-ff 合入主干，分支删除，工作区回到 main'
     assert.equal(finish.merged, true, finish.detail)
     assert.equal(finish.conflict, false)
     assert.equal(finish.stashed, null)
+    assert.equal(finish.autoCommitted, null, '工作区本来就干净，不该多出自动提交')
+    assert.equal(finish.mergedCommits, 1, '合进来的就是那一笔工单提交')
     assert.ok(finish.mergedSha !== null)
+    assert.match(finish.detail, /已合入 main（1 个提交，至 /, 'detail 要带提交数与短 sha')
     assert.equal(await ws.currentBranch(), 'main', '收尾后必须回到主干')
     assert.equal(readFileSync(join(repo.dir, 'feature.txt'), 'utf8'), '新功能\n', '改动应在主干上')
     assert.equal(git(repo.dir, 'branch', '--list', 'ticket/T-0029'), '', '分支应被删除')
-    // --no-ff 的证据：HEAD 是一个合并提交
+    // --no-ff 的证据：HEAD 是一个合并提交，且真的有两个父（不是快进）
     assert.equal(git(repo.dir, 'rev-list', '--merges', '--count', 'HEAD'), '1')
     assert.match(git(repo.dir, 'log', '-1', '--format=%s'), /merge\(T-0029\)/)
+    assert.equal(revExists(repo.dir, 'HEAD^2'), true, '--no-ff 必须留下第二父（工单分支 tip）')
   } finally {
     repo.cleanup()
   }
 })
 
-test('成功但有未提交改动：收进 stash 取证，不合入主干', async () => {
+test('成功但工作区有未提交改动、分支上还没有提交：自动提交到工单分支后再合入，产出不丢', async () => {
   const repo = makeRepo()
   try {
     const ws = makeWorkspace(repo.dir)
+    const before = git(repo.dir, 'rev-parse', 'main')
     await ws.begin('T-0030')
-    writeAndCommit(repo.dir, 'done.txt', '已提交的部分\n', 'feat: T-0030')
-    // 收尾前又动了一个文件没提交
-    writeFileSync(join(repo.dir, 'half-done.txt'), '半成品\n')
+    // 关键：改完不提交 —— 这正是 T-0027 的形状（43 分钟的产出全躺在工作区里）
+    writeFileSync(join(repo.dir, 'done.txt'), '43 分钟的产出\n')
 
     const finish = await ws.finishSuccess('T-0030')
 
-    assert.equal(finish.merged, true)
-    assert.ok(finish.stashed !== null, '未提交残留必须被 stash')
-    assert.equal(await ws.isDirty(), false)
-    assert.equal(
-      git(repo.dir, 'cat-file', '-e', 'HEAD:done.txt').length >= 0,
-      true,
-      '已提交部分要合入',
+    assert.equal(finish.merged, true, finish.detail)
+    assert.ok(finish.mergedCommits >= 1, `至少要合入自动提交那一笔：${String(finish.mergedCommits)}`)
+    assert.ok(finish.autoCommitted !== null, '收尾必须在工单分支上真的落一个提交')
+    assert.equal(finish.stashed, null, '有提交就不该再把产出推进 stash')
+    assert.notEqual(git(repo.dir, 'rev-parse', 'main'), before, '主干必须真的前进')
+    assert.equal(revHas(repo.dir, 'HEAD', 'done.txt'), true, '产出必须在主干上')
+    assert.equal(readFileSync(join(repo.dir, 'done.txt'), 'utf8'), '43 分钟的产出\n')
+    // 「提交 → 审阅 → 门禁」没被绕过：产出是一笔署了票号的提交，再由 merge 节点收进来
+    assert.match(
+      git(repo.dir, 'log', '--format=%s'),
+      /ticket\(T-0030\): 工单产出（收尾自动提交）/,
+      '产出提交要能追溯到工单',
     )
-    // 未提交的那一半不能出现在主干上
-    let present = true
-    try {
-      git(repo.dir, 'cat-file', '-e', 'HEAD:half-done.txt')
-    } catch {
-      present = false
-    }
-    assert.equal(present, false, '未提交的残留不能混进主干')
+    assert.equal(git(repo.dir, 'branch', '--list', 'ticket/T-0030'), '', '合入后删分支')
+    assert.equal(await ws.isDirty(), false, '收尾后工作区必须干净')
   } finally {
     repo.cleanup()
   }
 })
 
-test('失败收尾：分支删除、改动丢弃、主干 HEAD 不变', async () => {
+test('成功但本单完全没改动：不合入、不谎报，detail 写明主干未变', async () => {
+  const repo = makeRepo()
+  try {
+    const ws = makeWorkspace(repo.dir)
+    const before = git(repo.dir, 'rev-parse', 'main')
+    await ws.begin('T-0036')
+
+    const finish = await ws.finishSuccess('T-0036')
+
+    assert.equal(finish.merged, false, '一个字节都没进主干，就不能说「已合入」')
+    assert.equal(finish.mergedSha, null)
+    assert.equal(finish.mergedCommits, 0)
+    assert.equal(finish.conflict, false, '零提交不是冲突')
+    assert.match(finish.detail, /主干未变/, 'detail 必须说清真相')
+    assert.equal(git(repo.dir, 'rev-parse', 'main'), before, '主干必须一动不动')
+    assert.equal(git(repo.dir, 'rev-list', '--merges', '--count', 'HEAD'), '0', '不该造空合并提交')
+    assert.equal(git(repo.dir, 'rev-parse', '--abbrev-ref', 'HEAD'), 'main')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('失败收尾：分支删除、改动丢弃、主干 HEAD 不变，但已提交的改动留 tag 作证', async () => {
   const repo = makeRepo()
   try {
     const ws = makeWorkspace(repo.dir)
     const before = git(repo.dir, 'rev-parse', 'main')
     await ws.begin('T-0031')
     writeAndCommit(repo.dir, 'bad.txt', '失败的实现\n', 'wip: T-0031 失败实现')
+    const tip = git(repo.dir, 'rev-parse', 'ticket/T-0031')
 
     const finish = await ws.finishFailure('T-0031')
 
     assert.equal(finish.merged, false)
+    // 不合并 ≠ 销毁现场：分支删了，但 tip 必须还找得回来
+    const tag = finish.abandonedTag
+    assert.ok(tag !== null, '分支上有提交就必须打 tag 留证')
+    assert.equal(tag, 'abandoned/T-0031-20261123T100000Z', 'tag 名带票号与 UTC 时间戳')
+    assert.equal(git(repo.dir, 'rev-parse', tag), tip, 'tag 必须指在原分支 tip 上')
+    assert.equal(revHas(repo.dir, tag, 'bad.txt'), true, '现场内容仍能从 tag 读出')
+    assert.match(finish.detail, /abandoned\/T-0031-20261123T100000Z/, 'detail 要写明 tag')
+    assert.match(finish.detail, /已丢弃分支 ticket\/T-0031/)
     assert.equal(await ws.currentBranch(), 'main')
     assert.equal(git(repo.dir, 'rev-parse', 'main'), before, '主干必须一动不动')
     assert.equal(git(repo.dir, 'branch', '--list', 'ticket/T-0031'), '', '失败分支要删掉')
-    let present = true
-    try {
-      git(repo.dir, 'cat-file', '-e', 'HEAD:bad.txt')
-    } catch {
-      present = false
-    }
-    assert.equal(present, false, '失败改动不能进主干')
+    assert.equal(revHas(repo.dir, 'HEAD', 'bad.txt'), false, '失败改动不能进主干')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('失败且分支上没有提交：删分支、不产生留证 tag', async () => {
+  const repo = makeRepo()
+  try {
+    const ws = makeWorkspace(repo.dir)
+    await ws.begin('T-0037')
+    // 只写不提交：分支 tip 仍等于基线，没有现场可留
+    writeFileSync(join(repo.dir, 'draft.txt'), '草稿\n')
+
+    const finish = await ws.finishFailure('T-0037')
+
+    assert.equal(finish.merged, false)
+    assert.equal(finish.abandonedTag, null, '没有提交就没有现场可留，不该造 tag')
+    assert.equal(git(repo.dir, 'tag', '--list', 'abandoned/*'), '', '不该出现任何留证 tag')
+    assert.equal(git(repo.dir, 'branch', '--list', 'ticket/T-0037'), '', '分支要删掉')
+    assert.equal(finish.stashed !== null, true, '未提交残留照旧进 stash')
+    assert.match(finish.detail, /无提交产出/)
   } finally {
     repo.cleanup()
   }

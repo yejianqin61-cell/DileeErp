@@ -355,6 +355,6 @@ test('graceMs=0 时退回旧行为：不打招呼直接强制终止', { timeout:
       graceMs: 0,
     })
     assert.equal(result.outcome, 'timeout')
-    assert.match(result.error ?? '', /未设软截止/, '应明确说明没有软截止')
+    assert.match(result.error ?? '', /未设收口时间/, '应明确说明没有收口时间')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

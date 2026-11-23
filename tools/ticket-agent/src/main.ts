@@ -19,6 +19,7 @@ import { sweepStaleRuns } from './run-janitor.ts'
 import { GitWorkspace } from './git-workspace.ts'
 import { TicketStore } from './ticket-store.ts'
 import { deployConfigFromEnv } from './deploy.ts'
+import { DEFAULT_WATCHDOG_OPTIONS } from './watchdog.ts'
 
 interface Config {
   appId: string
@@ -32,7 +33,7 @@ interface Config {
   rootDir: string
   ticketsDir: string
   timeoutMs: number
-  /** 软截止提前量：到 timeoutMs - graceMs 时先发 SIGTERM 让 Agent 收口。0 = 不打招呼直接杀。 */
+  /** 收口提前量：到 timeoutMs - graceMs 时先发 SIGTERM 让 Agent 收口。0 = 不打招呼直接杀。 */
   graceMs: number
   deepseekKey: string
   /** 调度模型（判断「这条消息要做什么」）。 */
@@ -53,6 +54,10 @@ interface Config {
   mainBranch: string
   /** 是否启用每单一条工单分支（2026-11-23 用户决定）。 */
   branchIsolation: boolean
+  /** 是否启用看门狗（2026-11-23 用户决定）。 */
+  watchdogEnabled: boolean
+  /** 「多久没事件算没进展」。默认 10 分钟，真机验收时可调小。 */
+  watchdogIdleMs: number
 }
 
 const DEFAULTS = {
@@ -62,8 +67,8 @@ const DEFAULTS = {
   rootDir: '/opt/dilee',
   ticketsDir: '/opt/dilee/agent/tickets',
   baseUrl: 'https://open.feishu.cn',
-  timeoutMs: 45 * 60 * 1000,
-  graceMs: 2 * 60 * 1000,
+  timeoutMs: 6 * 60 * 60 * 1000,
+  graceMs: 60 * 1000,
   dispatchBaseUrl: 'https://api.deepseek.com',
   dispatchModel: 'deepseek-chat',
   /**
@@ -118,9 +123,16 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
   if (cardUpdateMs === null) return { missing: ['PROGRESS_CARD_UPDATE_MS（必须是非负数）'] }
   const graceRaw = env.HARNESS_GRACE_MS?.trim()
   const graceMs = graceRaw === undefined || graceRaw === '' ? DEFAULTS.graceMs : Number(graceRaw)
-  if (!Number.isFinite(graceMs) || graceMs < 0) return { missing: ['HARNESS_GRACE_MS（必须是非负数，0 = 不设软截止）'] }
-  // 软截止必须早于硬超时，否则等于没设：这里直接夹到「不超过超时的一半」。
+  if (!Number.isFinite(graceMs) || graceMs < 0) return { missing: ['HARNESS_GRACE_MS（必须是非负数，0 = 不设收口时间）'] }
+  // 收口时间必须早于绝对上限，否则等于没设：这里直接夹到「不超过上限的一半」。
   const effectiveGraceMs = Math.min(graceMs, Math.floor(timeoutMs / 2))
+
+  // 看门狗：多久没事件开始怀疑。默认 10 分钟（设计文档 §3.2）。
+  // 允许调小是为了在真机上验流程（WATCHDOG_IDLE_MS=60000 就能一分钟内看到一次问答）。
+  const watchdogIdleMs = positiveInteger(env.WATCHDOG_IDLE_MS, DEFAULT_WATCHDOG_OPTIONS.idleThresholdMs)
+  if (watchdogIdleMs === null || watchdogIdleMs <= 0) {
+    return { missing: ['WATCHDOG_IDLE_MS（必须是正整数）'] }
+  }
 
   return {
     appId: appId!,
@@ -135,6 +147,8 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
     ticketsDir: env.TICKETS_DIR?.trim() || DEFAULTS.ticketsDir,
     timeoutMs,
     graceMs: effectiveGraceMs,
+    watchdogEnabled: envFlag(env.WATCHDOG, true),
+    watchdogIdleMs: watchdogIdleMs ?? DEFAULT_WATCHDOG_OPTIONS.idleThresholdMs,
     dispatchBaseUrl: env.DEEPSEEK_BASE_URL?.trim() || DEFAULTS.dispatchBaseUrl,
     dispatchModel: env.DEEPSEEK_MODEL?.trim() || DEFAULTS.dispatchModel,
     progressNoticeMs,
@@ -163,9 +177,12 @@ async function main(): Promise<void> {
   log(`[main] Node：${config.nodePath}`)
   log(`[main] DSH：${config.dshBin}`)
   log(`[main] 工单目录：${config.ticketsDir}`)
-  log(`[main] 单次 run 超时：${Math.round(config.timeoutMs / 60000)} 分钟（提前 ${Math.round(config.graceMs / 1000)} 秒发 SIGTERM 收口）`)
+  log(`[main] 单次 run 绝对上限：${Math.round(config.timeoutMs / 60000)} 分钟（到点前 ${Math.round(config.graceMs / 1000)} 秒发 SIGTERM 收口；不再是 45 分钟硬截断）`)
+  log(
+    `[main] 看门狗：${config.watchdogEnabled ? `启用（${Math.round(config.watchdogIdleMs / 60000)} 分钟无进展 + CPU 空闲 → 群里申请截断，不自动杀）` : '关闭'}`,
+  )
   log(`[main] 问答模型：${config.dispatchModel} @ ${config.dispatchBaseUrl}`)
-  log(`[main] 调度：模型 + 工具（create_ticket / append_ticket / start_run / status / reply / deploy）`)
+  log(`[main] 调度：模型 + 工具（create_ticket / append_ticket / start_run / status / reply / deploy / kill_run / continue_run）`)
   log(`[main] 进度播报：${config.progressNoticeMs === 0 ? '关闭（只发开工/收尾/结束三条）' : `${Math.round(config.progressNoticeMs / 1000)} 秒`}；卡片更新：${Math.round(config.cardUpdateMs / 1000)} 秒`)
   log(
     `[main] 工作区分支：${config.branchIsolation ? `启用（每单 ticket/<票号>，成功后 --no-ff 合入 ${config.mainBranch}，失败丢弃）` : '关闭（所有单直接在主干上改）'}`,
@@ -252,6 +269,7 @@ async function main(): Promise<void> {
       : null,
     autoDeploy: config.autoDeploy,
     workspace,
+    watchdog: config.watchdogEnabled ? { options: { idleThresholdMs: config.watchdogIdleMs } } : null,
     log,
   })
 

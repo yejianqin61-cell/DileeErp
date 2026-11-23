@@ -136,7 +136,7 @@ test('成功：改动合入主干、分支删除、卡片写明已合入', async
 
     const card = ctx.transport.ofKind('update').at(-1)?.card
     assert.ok(
-      card?.lines.some((line) => line.includes('已合入主干')),
+      card?.lines.some((line) => line.includes('已合入') && /（\d+ 个提交/.test(line)),
       `卡片要写明合入结果：${card?.lines.join(' / ')}`,
     )
   } finally {

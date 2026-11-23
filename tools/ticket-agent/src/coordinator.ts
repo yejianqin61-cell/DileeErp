@@ -28,7 +28,10 @@ import {
   runHarness,
   type HarnessEvent,
   type HarnessResult,
+  type HarnessWatchdog,
 } from './harness-runner.ts'
+import { RunSampler } from './run-sampler.ts'
+import type { WatchdogOptions } from './watchdog.ts'
 import {
   DEFAULT_ENVIRONMENT,
   buildAppendPrompt,
@@ -106,6 +109,37 @@ export interface CoordinatorOptions {
    * 为 null 时退回旧行为（所有单都在主干上改），测试里可显式关掉。
    */
   workspace?: GitWorkspace | null
+  /**
+   * 看门狗（2026-11-23）。为 null 时关闭（测试默认关，避免留下 /proc 采样与定时器）。
+   *
+   * 它只做一件事：发现「疑似死锁」就**在群里问用户**「继续还是截断」。
+   * 机器人永远不自己截断 —— 用户原话：「向用户报告，申请截断」。
+   */
+  watchdog?: WatchdogConfig | null
+}
+
+/** 看门狗的接线配置。采样实现用 `/proc`，测试可换成假实现。 */
+export interface WatchdogConfig {
+  readonly options?: WatchdogOptions
+  /**
+   * 采样器工厂。默认 `(ctx) => new RunSampler(ctx)`（读 /proc）。
+   * 注入点在这里，是为了让「判定 + 问答」的测试不必依赖真实进程树。
+   */
+  readonly createSampler?: (input: { runId: string; mainPid: number }) => CpuSampler
+}
+
+/** 采样器的最小接口：`RunSampler` 满足它，测试的假实现也满足它。 */
+export interface CpuSampler {
+  /**
+   * 采一次。`processCount === 0` 表示**这一轮没读到进程树**（没有 /proc、进程已退出），
+   * 调用方必须把这当成「未知」而不是「空闲」——见下面 readCpu 的注释。
+   */
+  sample(): {
+    readonly totalPercent: number
+    readonly busiestChildPercent: number
+    readonly processCount: number
+  }
+  reset(): void
 }
 
 export type RouteDecision =
@@ -196,10 +230,14 @@ export function resultCard(input: {
 
   if (result.outcome === 'completed') {
     lines.push(`**结果**：已完成，改动在工作区等待部署`)
+  } else if (result.outcome === 'truncated') {
+    // 被切断 ≠ 完成（2026-11-23 T-0027 的教训：退出码 0 被当成了 success）。
+    // 卡片必须让人一眼看出「它没干完」，否则用户会以为可以部署。
+    const closed = result.error?.includes('SIGTERM') === true
+    lines.push(
+      `**结果**：${closed ? '被截断（已收口，未完成）' : '被截断（强制终止，未完成）'}（${Math.round(result.durationMs / 1000)} 秒）`,
+    )
   } else if (result.outcome === 'timeout') {
-    // 2026-11-22：不再只写「超时终止」。用户的原话是「45 分钟没收口强制截断」——
-    // 现在先发 SIGTERM 让 Agent 收口，并把「做到哪了」写进卡片，
-    // 否则群里只看到一个 timeout，等于这 45 分钟的信息全丢。
     const closed = result.error?.includes('SIGTERM') === true
     lines.push(`**结果**：${closed ? '已尽量收口后超时终止' : '超时终止（强制截断）'}（${Math.round(result.durationMs / 1000)} 秒）`)
   } else {
@@ -220,15 +258,17 @@ export function resultCard(input: {
   if (result.error !== undefined) lines.push(`**错误**：${result.error}`)
 
   const template: FeishuCard['template'] =
-    result.outcome === 'completed' ? 'green' : result.outcome === 'timeout' ? 'purple' : 'red'
+    result.outcome === 'completed' ? 'green' : result.outcome === 'truncated' ? 'purple' : result.outcome === 'timeout' ? 'purple' : 'red'
 
   return {
     title:
       result.outcome === 'completed'
         ? `有产出待部署｜${input.ticketNo}`
-        : result.outcome === 'timeout'
-          ? `超时终止｜${input.ticketNo}`
-          : `未完成｜${input.ticketNo}`,
+        : result.outcome === 'truncated'
+          ? `被截断（未完成）｜${input.ticketNo}`
+          : result.outcome === 'timeout'
+            ? `超时终止｜${input.ticketNo}`
+            : `未完成｜${input.ticketNo}`,
     template,
     lines,
     footer: `${input.ticketNo}｜${input.state}｜原话：${truncate(input.userText, 60)}`,
@@ -273,6 +313,29 @@ interface ResolvedOptions {
   deployImpl: typeof runDeploy
   autoDeploy: boolean
   workspace: GitWorkspace | null
+  watchdog: WatchdogConfig | null
+}
+
+/**
+ * 一次正在跑的 run 的控制权。
+ *
+ * 为什么要有这个东西：用户回「截断」时，那次 run 在**串行队列里**跑着，
+ * 消息处理不能等它结束。所以另存一个控制对象，由消息路径直接 abort。
+ */
+interface ActiveRun {
+  readonly ticketId: string
+  readonly ticketNo: string
+  readonly chatId: string
+  /** 触发这次 run 的消息 id，群里问话就回在它下面。 */
+  readonly messageId: string | null
+  readonly startedAtMs: number
+  readonly controller: AbortController
+  /** 采样器：用户说「继续」后 reset()，把之前的空转清掉重新计时。 */
+  sampler: CpuSampler | null
+  /** 是否已经在群里问过「继续还是截断」。只问一次，防复读。 */
+  askedAtMs: number | null
+  /** 用户是否已明确表态。 */
+  decision: 'continue' | 'kill' | null
 }
 
 export class Coordinator {
@@ -283,6 +346,11 @@ export class Coordinator {
   private answerQueue: Promise<unknown> = Promise.resolve()
   /** 卡片更新串行化，避免乱序覆盖。 */
   private cardChain: Promise<void> = Promise.resolve()
+  /**
+   * 当前正在跑的那张单。同一时刻最多一个（单车道）。
+   * 用户回「截断」时从消息路径直接 abort 它，不必等队列排到。
+   */
+  private activeRun: ActiveRun | null = null
 
   constructor(options: CoordinatorOptions) {
     this.opts = {
@@ -308,6 +376,7 @@ export class Coordinator {
       deployImpl: options.deployImpl ?? runDeploy,
       autoDeploy: options.autoDeploy ?? false,
       workspace: options.workspace ?? null,
+      watchdog: options.watchdog ?? null,
     }
   }
 
@@ -422,6 +491,12 @@ export class Coordinator {
     }
     if (action.kind === 'start_run') {
       return await this.startRun(action.ticketNo, message, at)
+    }
+    if (action.kind === 'kill_run') {
+      return this.killRun(action.ticketNo, message)
+    }
+    if (action.kind === 'continue_run') {
+      return this.continueRun(action.ticketNo, message)
     }
     if (action.kind === 'append_ticket') {
       return await this.appendTicket(action, message, route, at)
@@ -725,6 +800,25 @@ export class Coordinator {
             ...(hint === undefined || hint === null ? {} : { hint }),
           })
 
+      // ── 看门狗（2026-11-23）────────────────────────────────────────────
+      // 只报告、只发问，**从不自己截断**。真正会杀的两条路都不在这里：
+      //   1. 绝对上限 6 小时（harness-runner 的定时器）；
+      //   2. 用户明确回「截断」（下面 activeRun.controller.abort()）。
+      const controller = new AbortController()
+      const runControl: ActiveRun = {
+        ticketId: latest.id,
+        ticketNo: latest.no,
+        chatId: latest.chatId,
+        messageId: firstMessageId ?? null,
+        startedAtMs,
+        controller,
+        sampler: null,
+        askedAtMs: null,
+        decision: null,
+      }
+      this.activeRun = runControl
+      const watchdog = this.buildWatchdog(latest, runControl)
+
       this.opts.log(`[coord] run ${latest.no} append=${String(isAppend)} session=${latest.sessionId ?? '(new)'}`)
       result = await this.opts.runHarnessImpl({
         dshBin: this.opts.dshBin,
@@ -734,10 +828,13 @@ export class Coordinator {
         ...(latest.sessionId === null ? {} : { sessionId: latest.sessionId }),
         timeoutMs: this.opts.timeoutMs,
         graceMs: this.opts.graceMs,
+        abortSignal: controller.signal,
+        ...(watchdog === null ? {} : { watchdog }),
         ...(this.opts.childEnv === undefined ? {} : { env: this.opts.childEnv }),
         onEvent,
       })
     } finally {
+      this.activeRun = null
       // 没有周期心跳，所以这里没有定时器要清。
     }
 
@@ -748,37 +845,64 @@ export class Coordinator {
 
     // ── 工作区收尾（2026-11-23）：成功才合入主干，失败一律丢弃 ──
     //
-    // 失败单已提交的改动 → 删分支（主干绝不被污染）；
+    // 失败单已提交的改动 → 删分支（主干绝不被污染，打 tag 留证）；
     // 未提交的残留 → stash（现场绝不销毁，ref 写进结论）。
+    //
+    // 注意 `merged` 才是「主干真的变了」的唯一凭据。2026-11-23 T-0027：
+    // 分支还停在基线，merge 只回了句 Already up to date，旧实现却报「已合入主干」。
+    // 所以这里以 `finish.merged` 决定状态，不再以 `result.outcome` 决定。
     let workspaceNote = ''
+    let workspaceMerged: boolean | null = null
     if (this.opts.workspace !== null && workspaceBegun !== null) {
       try {
         const finish =
           result.outcome === 'completed'
             ? await this.opts.workspace.finishSuccess(latest.no)
             : await this.opts.workspace.finishFailure(latest.no)
+        workspaceMerged = finish.merged
         if (finish.stashed !== null) {
           this.opts.store.setStash(latest.id, finish.stashed, this.stamp())
         }
         const parts: string[] = []
-        if (finish.merged) parts.push(`已合入主干 ${finish.mergedSha === null ? '' : finish.mergedSha.slice(0, 8)}`)
-        else if (finish.conflict) parts.push('与主干冲突，未合入（分支已保留，需人工决定）')
-        else parts.push('未合入主干')
+        // 「合没合入」单独说一遍：detail 里会有各种细节（提交数、tag、冲突原因），
+        // 群里最需要一眼看到的正是这一句。T-0027 那次就是这里只写了别的，人以为已经上线了。
+        if (!finish.merged) parts.push('未合入主干')
+        parts.push(finish.detail)
         if (finish.stashed !== null) parts.push(`残留已暂存为 ${finish.stashed}`)
         workspaceNote = `分支 ${workspaceBegun.branch}：${parts.join('；')}`
-        this.opts.log(`[coord] workspace ${latest.no} ${workspaceNote}`)
+        this.opts.log(`[coord] workspace ${latest.no} merged=${String(finish.merged)} ${workspaceNote}`)
       } catch (error) {
         workspaceNote = `分支收尾失败：${error instanceof Error ? error.message : String(error)}`
         this.opts.log(`[coord] workspace finish failed ${latest.no}: ${workspaceNote}`)
       }
     }
 
-    // 状态映射：run 成功 → gated（有产出待部署）；失败/超时 → failed。
-    const nextState = result.outcome === 'completed' ? 'gated' : 'failed'
-    const summaryBase = summarize(result, 400) || (result.error ?? '')
+    // 状态映射（2026-11-23 修正语义）：
+    //   · 跑完了**并且主干真的进了改动** → gated（有产出待部署）
+    //   · 跑完了但主干没变（没有提交产出 / 冲突） → failed（没有可部署的东西，别骗人）
+    //   · 被截断 / 超时 / 失败 → failed
+    //
+    // 旧实现只看 `result.outcome === 'completed'`，于是在「45 分钟软截止后退出码 0」
+    // 和「分支零提交」两种情况下都会把工单推进 gated，让人以为可以上线。
+    const mergedOk = workspaceMerged === null ? true : workspaceMerged
+    const succeeded = result.outcome === 'completed' && mergedOk
+    const nextState = succeeded ? 'gated' : 'failed'
+    // 结论的组织顺序跟着结果变：没跑完的单，**先说为什么没跑完**，再放它最后说的话。
+    // 旧实现把 finalText 放前面，被截断的单就会显示「完成了一部分」，
+    // 用户读到的是"能上线"，实际是"只做了一半"。
+    const summaryBase =
+      result.outcome === 'completed'
+        ? summarize(result, 400) || (result.error ?? '')
+        : [result.error ?? '', summarize(result, 400)].filter((part) => part.length > 0).join('\n')
     const summary = workspaceNote.length === 0 ? summaryBase : `${summaryBase}\n${workspaceNote}`
     const outcome: TicketResult['outcome'] =
-      result.outcome === 'completed' ? 'completed' : result.outcome === 'timeout' ? 'timeout' : 'failed'
+      result.outcome === 'completed'
+        ? 'completed'
+        : result.outcome === 'truncated'
+          ? 'truncated'
+          : result.outcome === 'timeout'
+            ? 'timeout'
+            : 'failed'
     try {
       this.opts.store.setResult(
         latest.id,
@@ -801,19 +925,167 @@ export class Coordinator {
       workspaceNote,
     )
 
-    // 全自动上线：run 成功且有产出 → 排队部署（与 run 共用串行队列，不会并发）。
-    if (this.opts.autoDeploy && result.outcome === 'completed') {
+    // 全自动上线：run 成功、主干真的有改动 → 排队部署（与 run 共用串行队列，不会并发）。
+    if (this.opts.autoDeploy && succeeded) {
       this.enqueueDeploy({
         kind: 'auto',
         chatId: latest.chatId,
         ticketNo: latest.no,
         messageId: firstMessageId ?? null,
       })
+    } else if (this.opts.autoDeploy && result.outcome === 'completed' && !mergedOk) {
+      this.opts.log(`[coord] skip deploy ${latest.no}：完成了但主干没有改动，没有可上线的产出`)
     }
 
     this.opts.log(
       `[coord] done ${latest.no} outcome=${result.outcome} state=${nextState} duration=${result.durationMs}ms tools=${result.counts.toolCalls} subagents=${result.counts.subagentCalls}`,
     )
+  }
+
+  // ───────────────────────────── 看门狗 ─────────────────────────────
+
+  /**
+   * 组装这次 run 的看门狗。返回 null 表示这台机器上关掉了。
+   *
+   * 判定与采样分家：`run-sampler.ts` 只负责「进程树现在吃多少 CPU」，
+   * `watchdog.ts` 只负责「这算不算卡住」，这里只负责「要不要在群里问一句」。
+   */
+  private buildWatchdog(ticket: StoredTicket, control: ActiveRun): HarnessWatchdog | null {
+    const config = this.opts.watchdog
+    if (config === null) return null
+
+    const createSampler =
+      config.createSampler ?? ((input: { runId: string; mainPid: number }) => new RunSampler(input))
+
+    return {
+      ...(config.options === undefined ? {} : { options: config.options }),
+      // 采样器第一次被调用时才建：`childPid` 由 runner 传进来（它才是 spawn 的人）。
+      readCpu: (childPid: number) => {
+        try {
+          if (control.sampler === null && childPid > 0) {
+            control.sampler = createSampler({ runId: `ticket-${ticket.no}`, mainPid: childPid })
+          }
+          if (control.sampler === null) return null
+          const snap = control.sampler.sample()
+          // 一个进程都没读到 = 这一轮没有观测，不是「CPU 0%」。
+          // 差别很要命：判据是 `cpuPercent < 1`，报 0 会直接满足「没在干活」那一条。
+          if (snap.processCount === 0) return null
+          return { cpuPercent: snap.totalPercent, maxChildCpuPercent: snap.busiestChildPercent }
+        } catch (error) {
+          this.opts.log(`[coord] sampler failed ${ticket.no}: ${error instanceof Error ? error.message : String(error)}`)
+          // 读不到就交白卷：这一轮不做死锁判定（宁可漏报，不可误报）。
+          return null
+        }
+      },
+      onSuspect: (notice) => {
+        this.askTruncation(ticket, control, notice.description, notice.sample.toolCalls)
+      },
+      onCeilingWarning: (notice) => {
+        void this.notify(
+          control.messageId ?? undefined,
+          `${ticket.no} 快到绝对上限（${Math.round(notice.elapsedMs / 60_000)} 分钟／上限 ${Math.round(this.opts.timeoutMs / 3_600_000)} 小时），到点会强制收口。要提前停就回「截断」。`,
+        )
+      },
+    }
+  }
+
+  /**
+   * 在群里申请截断。**同一张单只问一次**。
+   *
+   * 为什么只问一次：看门狗每 60 秒复判一次，不记账就会变成每分钟问一遍的复读机
+   * （2026-11-20 用户已经因为播报太多说过一次了）。问过一次就把记账写进工单，
+   * 机器人重启也不会重问。
+   */
+  private askTruncation(ticket: StoredTicket, control: ActiveRun, detail: string, toolCalls: number): void {
+    if (control.askedAtMs !== null || control.decision !== null) return
+    control.askedAtMs = this.nowMs()
+    const at = this.stamp()
+    try {
+      this.opts.store.setWatch(ticket.id, { askedAt: at, detail, decided: null }, at)
+    } catch (error) {
+      this.opts.log(`[coord] setWatch failed ${ticket.no}: ${String(error)}`)
+    }
+    const elapsed = Math.round((this.nowMs() - control.startedAtMs) / 60_000)
+    this.opts.log(`[coord] watchdog suspect ${ticket.no} asked=true tools=${toolCalls}`)
+    void this.notify(
+      control.messageId ?? undefined,
+      `${ticket.no} 疑似卡住了：${detail}（已跑 ${elapsed} 分钟，工具调用 ${toolCalls} 次）。\n回「继续」我就让它接着跑；回「截断」我就停掉，本单改动按失败处理、不合入主干。不回也行，绝对上限会让它自己收口。`,
+    )
+  }
+
+  /**
+   * 用户说「继续」。重置采样基线（重新计时），并允许下次再问。
+   *
+   * 允许再问的理由：用户说「继续」是「现在别切」，不是「以后永远别问」。
+   * 如果它接着静默两个小时，还是该提醒一次 —— 否则看门狗就成了一次性保险。
+   */
+  private continueRun(ticketNo: string | null, message: IncomingMessage): HandleOutcome {
+    const control = this.activeRun
+    if (control === null) {
+      this.enqueueAnswer(() =>
+        this.reply(message.messageId, '现在没有正在跑的单，不用继续。'),
+      )
+      return { outcome: 'answered', note: 'continue:none' }
+    }
+    if (ticketNo !== null && ticketNo !== control.ticketNo) {
+      this.enqueueAnswer(() =>
+        this.reply(message.messageId, `正在跑的是 ${control.ticketNo}，不是 ${ticketNo}。要继续 ${ticketNo} 请等它跑完，或再跟一句。`),
+      )
+      return { outcome: 'answered', ticketNo: control.ticketNo, note: 'continue:mismatch' }
+    }
+
+    control.decision = 'continue'
+    control.askedAtMs = null
+    control.sampler?.reset()
+    const at = this.stamp()
+    try {
+      const stored = this.opts.store.get(control.ticketId)
+      if (stored?.watch != null) {
+        this.opts.store.setWatch(control.ticketId, { ...stored.watch, decided: 'continue' }, at)
+      }
+    } catch (error) {
+      this.opts.log(`[coord] setWatch(continue) failed: ${String(error)}`)
+    }
+    this.opts.log(`[coord] watchdog continue ${control.ticketNo}`)
+    this.enqueueAnswer(() =>
+      this.reply(message.messageId, `好，${control.ticketNo} 继续跑。到绝对上限前不再打扰，需要停就回「截断」。`),
+    )
+    return { outcome: 'answered', ticketNo: control.ticketNo, note: 'continue' }
+  }
+
+  /** 用户说「截断」：abort 掉子进程，走与到顶同一套两段式收口。 */
+  private killRun(ticketNo: string | null, message: IncomingMessage): HandleOutcome {
+    const control = this.activeRun
+    if (control === null) {
+      this.enqueueAnswer(() => this.reply(message.messageId, '现在没有正在跑的单，没有可截断的。'))
+      return { outcome: 'answered', note: 'kill:none' }
+    }
+    if (ticketNo !== null && ticketNo !== control.ticketNo) {
+      this.enqueueAnswer(() =>
+        this.reply(message.messageId, `正在跑的是 ${control.ticketNo}，不是 ${ticketNo}。要截断 ${ticketNo} 得等它开始跑。`),
+      )
+      return { outcome: 'answered', ticketNo: control.ticketNo, note: 'kill:mismatch' }
+    }
+
+    control.decision = 'kill'
+    const at = this.stamp()
+    try {
+      const stored = this.opts.store.get(control.ticketId)
+      if (stored?.watch != null) {
+        this.opts.store.setWatch(control.ticketId, { ...stored.watch, decided: 'kill' }, at)
+      }
+    } catch (error) {
+      this.opts.log(`[coord] setWatch(kill) failed: ${String(error)}`)
+    }
+    this.opts.log(`[coord] watchdog kill ${control.ticketNo}`)
+    control.controller.abort()
+    this.enqueueAnswer(() =>
+      this.reply(
+        message.messageId,
+        `收到，正在停 ${control.ticketNo}（先让它写一句做到哪了，30 秒内收口）。本单改动按失败处理，不会合入主干。`,
+      ),
+    )
+    return { outcome: 'answered', ticketNo: control.ticketNo, note: 'kill' }
   }
 
   // ───────────────────────────── 部署路径 ─────────────────────────────

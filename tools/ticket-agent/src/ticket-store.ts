@@ -56,8 +56,25 @@ export interface StoredTicket {
   baseSha?: string | null
   /** 收尾时未提交残留的 stash ref（取证材料，不是候选代码）。 */
   stashRef?: string | null
+  /**
+   * 看门狗申请截断的记账。
+   *
+   * 为什么挂在工单上而不是进程内存里：机器人重启后仍要答得出「这单我问过你，你没回」，
+   * 否则重启一次就问一次，群里就成了复读机。
+   */
+  watch?: TicketWatch | null
   readonly createdAt: string
   updatedAt: string
+}
+
+/** 一次「疑似死锁，请你决定」的问答记录。 */
+export interface TicketWatch {
+  /** 第一次在群里发问的时刻。 */
+  askedAt: string
+  /** 采样到的现场（「已 12 分钟无事件进展、CPU 0.3%」这类）。 */
+  detail: string
+  /** 用户的回答。null = 还没答。 */
+  decided: 'continue' | 'kill' | null
 }
 
 /**
@@ -81,7 +98,12 @@ export interface TicketProgress {
 
 /** 一次 run 的结果摘要。 */
 export interface TicketResult {
-  outcome: 'completed' | 'failed' | 'timeout'
+  /**
+   * `truncated` = 被我们切断（到 6 小时绝对上限，或用户选择截断），
+   * 与 `timeout` 的区别是「它收到 SIGTERM 后正常退出了，留下了交接信息」。
+   * 两者都**不是** completed：被切断的 run 一律不许合入主干。
+   */
+  outcome: 'completed' | 'truncated' | 'failed' | 'timeout'
   summary: string
   durationMs: number
   at: string
@@ -328,6 +350,20 @@ export class TicketStore {
     const ticket = this.get(id)
     if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
     const next: StoredTicket = { ...ticket, state, updatedAt: at }
+    writeJsonAtomic(this.ticketPath(id), next)
+    return next
+  }
+
+  /**
+   * 记账一次「疑似死锁，请你决定」。
+   *
+   * 存在的作用是**防复读**：看门狗每 60 秒都会重新判一次，不记账就会每 60 秒问一遍。
+   * 记账之后同一张单只问一次，直到用户回答或 run 结束。
+   */
+  setWatch(id: string, watch: TicketWatch | null, at: string): StoredTicket {
+    const ticket = this.get(id)
+    if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
+    const next: StoredTicket = { ...ticket, watch, updatedAt: at }
     writeJsonAtomic(this.ticketPath(id), next)
     return next
   }

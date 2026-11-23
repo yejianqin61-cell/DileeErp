@@ -36,6 +36,13 @@ export type DispatchAction =
   | { kind: 'ask_more_info'; question: string; ticketNo: string | null }
   | { kind: 'reply'; text: string }
   | { kind: 'deploy' }
+  /**
+   * 截断正在跑的这张单。2026-11-23 起 45 分钟硬截断退场，改由看门狗发现疑似死锁后
+   * **问用户**，用户说要切，才走这个动作。所以它是「执行用户的决定」，不是「机器人自己判死」。
+   */
+  | { kind: 'kill_run'; ticketNo: string | null }
+  /** 疑似死锁是误报、或用户想让它继续跑。 */
+  | { kind: 'continue_run'; ticketNo: string | null }
 
 export interface DispatchInput {
   /** 用户原话（已去掉 @占位符）。 */
@@ -175,6 +182,35 @@ const TOOLS = [
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'kill_run',
+      description:
+        '截断正在跑的那张单。只在用户明确说要「截断/停掉/杀掉/别跑了」时用；机器人从不会自己决定截断。',
+      parameters: {
+        type: 'object',
+        properties: {
+          ticketNo: { type: 'string', description: '工单号，如 T-0027。用户没点名可留空，表示当前在跑的那张' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'continue_run',
+      description: '让正在跑的那张单继续跑（看门狗报了疑似死锁，用户说「继续/没事/别动它」时用）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          ticketNo: { type: 'string', description: '工单号，如 T-0027。用户没点名可留空，表示当前在跑的那张' },
+        },
+        required: [],
+      },
+    },
+  },
 ] as const
 
 const MODULES = [
@@ -233,6 +269,8 @@ export function buildSystemPrompt(input: DispatchInput): string {
     '- 说要改但完全看不出想变成什么样 → ask_more_info，问一句具体的问题。',
     '- 明确要求部署/上线/发布 → deploy。',
     '- 让某张已完成的单再跑一轮 → start_run。',
+    '- 说要截断/停掉正在跑的单 → kill_run；说让它继续跑 → continue_run。',
+    '  只有用户**明确表态**才用这两个，你的判断不能替代用户的决定。',
     '',
     '# 拿不准时怎么办（重要）',
     '只要原话里点出了**具体的页面、模块或功能点**，即使没写「希望变成什么样」，也直接 create_ticket。',
@@ -356,6 +394,16 @@ export function normalizeAction(name: string, args: unknown): DispatchAction | n
   }
 
   if (name === 'deploy') return { kind: 'deploy' }
+
+  if (name === 'kill_run') {
+    const rawNo = str(record.ticketNo)
+    return { kind: 'kill_run', ticketNo: rawNo === null ? null : normalizeTicketNo(rawNo) }
+  }
+
+  if (name === 'continue_run') {
+    const rawNo = str(record.ticketNo)
+    return { kind: 'continue_run', ticketNo: rawNo === null ? null : normalizeTicketNo(rawNo) }
+  }
 
   return null
 }

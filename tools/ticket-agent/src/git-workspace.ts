@@ -15,7 +15,10 @@
  * 是实付成本。将来真要并行，把这个模块内部换成 worktree 即可，接口不变。
  *
  * 两条不能混淆的处置（用户同一条消息里都提了，容易读成矛盾）：
- *   - 失败单**已提交**的改动 → 删分支，丢弃。主干绝不被污染。
+ *   - 成功单**工作区里未提交**的改动 → 提交到**工单分支**，再 `--no-ff` 合入主干。
+ *     （2026-11-23 T-0027 事故后改成这样：旧顺序是「先 stash 残留 → 再 merge」，
+ *     等于把 43 分钟的产出整个扔掉，还回一句「已合入主干」。详见 `finishSuccess`。）
+ *   - 失败单**已提交**的改动 → 打 `abandoned/<票号>-<时间戳>` tag 留证后删分支。主干绝不被污染。
  *   - 收尾时**未提交**的残留 → `git stash push -u` 收进 stash，ref 写进工单结论。现场绝不销毁。
  */
 
@@ -32,9 +35,22 @@ export interface WorkspaceBegin {
 }
 
 export interface WorkspaceFinish {
-  /** 是否已合入主干。 */
+  /**
+   * 是否**真的**把提交合进了主干。
+   *
+   * 硬约束：主干 sha 没变就必须是 false，`detail` 必须说清真相。
+   * 2026-11-23 T-0027 事故就是这里撒谎 —— 分支停在基线，`merge` 只回了句
+   * `Already up to date`，一个字节没进主干，却返回 `merged: true` / 「已合入主干」。
+   */
   readonly merged: boolean
+  /** 合并后的主干 HEAD sha；未合入时为 null。 */
   readonly mergedSha: string | null
+  /** 这次合并真正带进主干的提交数；未合入时为 0。 */
+  readonly mergedCommits: number
+  /** 成功收尾时自动提交到工单分支的 sha（工作区本来就干净时为 null）。 */
+  readonly autoCommitted: string | null
+  /** 失败收尾时为留证打的 tag 名（分支上本来就没有提交时为 null）。 */
+  readonly abandonedTag: string | null
   /** 收尾时把未提交残留收进的 stash ref。 */
   readonly stashed: string | null
   /** merge 冲突：未合入、分支保留，需人工决定。 */
@@ -109,6 +125,24 @@ export function branchFor(ticketNo: string): string {
 
 function shortSha(value: string): string {
   return value.trim().slice(0, 8)
+}
+
+/** 票号 → 可安全放进分支名 / tag 名的片段。 */
+function safeRefPart(ticketNo: string): string {
+  return ticketNo.replace(/[^A-Za-z0-9._-]/g, '-')
+}
+
+/**
+ * 留证 tag 的时间戳：`2026-11-23T09:30:36.000Z` → `20261123T093036Z`。
+ *
+ * 用紧凑格式是为了让 tag 名可以直接当文件名 / 逗号分隔贴进卡片，
+ * 且不带 `:`（Windows 上某些工具链拿到带冒号的 ref 名会出问题）。
+ */
+function compactTimestamp(at: Date): string {
+  return at
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z')
 }
 
 export class GitWorkspace {
@@ -209,7 +243,21 @@ export class GitWorkspace {
   }
 
   /**
-   * 成功收尾：stash 未提交残留 → 切主干 → `merge --no-ff`。
+   * 成功收尾：先在**工单分支上提交**工作区改动 → 切主干 → `merge --no-ff` → 删分支。
+   *
+   * 为什么必须先提交再合并（2026-11-23 T-0027 事故）：旧顺序是「先 `stashResidue` 残留 →
+   * 再 merge」。T-0027 跑满 43 分钟、4 个文件改好了但一个 commit 都没做（它打算验证完再提交，
+   * 没走到那步），旧顺序把 4 个文件的全部改动推进 stash，分支还停在基线上，
+   * `merge` 只回了句 `Already up to date`，**主干一个字节都没变**，
+   * 函数却返回 `merged: true` / 「已合入主干」→ 工单被推进 gated，卡片骗了用户。
+   *
+   * 工单成功的定义是「需求已实现」，此时工作区里的改动**就是**产出。
+   * 把它 stash 掉、再合一个空分支，是自欺。而提交到工单分支再 `--no-ff` 合入，
+   * `git log --graph` 里仍然能看清每一笔改动来自哪张工单，「提交 → 审阅 → 门禁」这条链一点没绕过。
+   *
+   * 报告口径（同一条铁律）：主干 sha 没变，就绝不写「已合入」。
+   *   - 分支相对主干零提交 → 不调用 merge（否则 git 只回 `Already up to date`，假装成功）。
+   *   - merge 成功但 HEAD 没动 → 同样 `merged: false`。
    *
    * 用 `--no-ff` 是为了让「这一批改动来自哪张工单」在 `git log --graph` 里看得见，
    * 而不是一堆平铺提交。冲突不自动解：冲突意味着两个工单动了同一处语义，
@@ -218,60 +266,196 @@ export class GitWorkspace {
   async finishSuccess(ticketNo: string): Promise<WorkspaceFinish> {
     const branch = branchFor(ticketNo)
 
-    // 成功但有未提交改动：收进 stash 取证，**不合入**。
-    // 合入未提交的东西等于绕过「提交 → 审查 → 门禁」这条链，宁可让它停在 gated。
-    const stashed = await this.stashResidue(`${ticketNo}-uncommitted-on-success`)
+    // ① 工作区脏 → 在工单分支上提交（这就是产出）。提交失败才退回 stash。
+    let stashed: string | null = null
+    let autoCommitted: string | null = null
+    if (await this.isDirty()) {
+      if ((await this.currentBranch()) === branch) {
+        try {
+          autoCommitted = await this.commitResidue(`ticket(${ticketNo}): 工单产出（收尾自动提交）`)
+        } catch (error) {
+          this.log(`[ws] 自动提交失败，退回 stash：${error instanceof Error ? error.message : String(error)}`)
+          stashed = await this.stashResidue(`${ticketNo}-uncommitted-on-success`)
+        }
+      } else {
+        // 不在工单分支上：这些改动归属说不清，绝不能提交到主干，退回 stash 取证。
+        stashed = await this.stashResidue(`${ticketNo}-uncommitted-on-success`)
+      }
+    }
 
+    // ② 切回主干。
     const back = await this.git(['checkout', this.mainBranch])
     if (back.code !== 0) {
-      return {
-        merged: false,
-        mergedSha: null,
+      return this.finishResult({
         stashed,
-        conflict: false,
+        autoCommitted,
         detail: `切回 ${this.mainBranch} 失败：${back.stderr.trim().slice(0, 200)}`,
-      }
+      })
     }
+    const mainBefore = await this.headSha()
 
     if (!(await this.branchExists(branch))) {
-      return {
-        merged: false,
-        mergedSha: null,
+      return this.finishResult({
         stashed,
-        conflict: false,
+        autoCommitted,
         detail: `分支 ${branch} 不存在（Agent 可能直接提交到了主干）`,
-      }
+      })
     }
 
+    // ③ 先数提交：零提交就根本不该调 merge。
+    const commits = await this.countCommits(this.mainBranch, branch)
+    if (commits === null) {
+      return this.finishResult({
+        stashed,
+        autoCommitted,
+        detail: `读不到分支 ${branch} 的提交数，未合入（请人工确认）`,
+      })
+    }
+    if (commits === 0) {
+      // 零提交：分支只是个指向基线的空壳，删掉它，但绝不谎报合入。
+      const del = await this.git(['branch', '-d', branch])
+      this.log(`[ws] ${ticketNo} 没有任何提交产出，主干未变${del.code === 0 ? '（空分支已删）' : ''}`)
+      return this.finishResult({
+        stashed,
+        autoCommitted,
+        detail: `本单没有任何提交产出，主干未变`,
+      })
+    }
+
+    // ④ 真合入。
     const merge = await this.git(['merge', '--no-ff', '-m', `merge(${ticketNo}): 工单收尾合入`, branch])
     if (merge.code !== 0) {
       await this.git(['merge', '--abort'])
       this.log(`[ws] ${ticketNo} 合入冲突，分支保留待人工处理`)
-      return {
-        merged: false,
-        mergedSha: null,
+      return this.finishResult({
         stashed,
+        autoCommitted,
         conflict: true,
         detail: `与 ${this.mainBranch} 冲突，已中止合入，分支 ${branch} 保留：${merge.stderr.trim().slice(0, 200)}`,
-      }
+      })
     }
 
     const head = await this.headSha()
-    await this.git(['branch', '-d', branch])
-    this.log(`[ws] ${ticketNo} 已合入 ${this.mainBranch}（${head === null ? '?' : shortSha(head)}）`)
+    if (head === null || head === mainBefore) {
+      // merge 说成功，但 HEAD 没动（`Already up to date`）。主干没变，就不能说合入。
+      // 分支保留：它上面还有未进主干的提交，删了就没了。
+      this.log(`[ws] ${ticketNo} merge 未产生新提交（HEAD 未变），按未合入报告，分支 ${branch} 保留`)
+      return this.finishResult({
+        stashed,
+        autoCommitted,
+        detail: `主干未变（Already up to date），分支 ${branch} 保留`,
+      })
+    }
+
+    const del = await this.git(['branch', '-d', branch])
+    if (del.code !== 0) this.log(`[ws] 删除分支 ${branch} 失败：${del.stderr.trim().slice(0, 120)}`)
+    this.log(`[ws] ${ticketNo} 已合入 ${this.mainBranch}（${commits} 个提交，至 ${shortSha(head)}）`)
+
+    const extra: string[] = []
+    if (autoCommitted !== null) extra.push(`收尾自动提交 ${shortSha(autoCommitted)}`)
+    if (stashed !== null) extra.push(`未提交残留已暂存为 ${stashed}`)
+    if (del.code !== 0) extra.push(`分支 ${branch} 删除失败`)
+    const suffix = extra.length === 0 ? '' : `；${extra.join('；')}`
     return {
       merged: true,
       mergedSha: head,
+      mergedCommits: commits,
+      autoCommitted,
+      abandonedTag: null,
       stashed,
       conflict: false,
-      detail: `已合入 ${this.mainBranch}`,
+      detail: `已合入 ${this.mainBranch}（${commits} 个提交，至 ${shortSha(head)}）${suffix}`,
+    }
+  }
+
+  /** 未合入时的统一形状：`merged` 恒为 false，`mergedCommits` 恒为 0。 */
+  private finishResult(input: {
+    readonly detail: string
+    readonly stashed: string | null
+    readonly autoCommitted?: string | null
+    readonly abandonedTag?: string | null
+    readonly conflict?: boolean
+  }): WorkspaceFinish {
+    return {
+      merged: false,
+      mergedSha: null,
+      mergedCommits: 0,
+      autoCommitted: input.autoCommitted ?? null,
+      abandonedTag: input.abandonedTag ?? null,
+      stashed: input.stashed,
+      conflict: input.conflict ?? false,
+      detail: input.detail,
     }
   }
 
   /**
-   * 失败收尾：stash 残留 → 切主干 → 删分支。
+   * 把工作区里未提交的改动提交到**当前分支**，返回提交后的 HEAD sha。
+   *
+   * 只在确定当前就在工单分支上时调用 —— 这个函数会真的落一个 commit，
+   * 在主干上调用就等于把未审的改动直接塞进主干。
+   *
+   * 提交失败就抛错，由调用方退回 `stashResidue`：现场绝不销毁。
+   */
+  private async commitResidue(message: string): Promise<string | null> {
+    if (!(await this.isDirty())) return null
+    const add = await this.git(['add', '-A'])
+    if (add.code !== 0) {
+      throw new Error(`git add -A 失败：${add.stderr.trim().slice(0, 200)}`)
+    }
+    const commit = await this.git(['commit', '-m', message])
+    if (commit.code !== 0) {
+      throw new Error(`git commit 失败：${commit.stderr.trim().slice(0, 200)}`)
+    }
+    const sha = await this.headSha()
+    this.log(`[ws] 工单产出已提交到当前分支：${sha === null ? '?' : shortSha(sha)}（${message}）`)
+    return sha
+  }
+
+  /**
+   * 数 `base..tip` 上的提交数（= 一次 `--no-ff` 合并会带进主干的提交数）。
+   *
+   * 读不到时返回 null 而不是 0：这时候必须停下报告，不能凭空断言「合入了 0 个」或「已合入」。
+   */
+  private async countCommits(base: string, tip: string): Promise<number | null> {
+    const result = await this.git(['rev-list', '--count', `${base}..${tip}`])
+    if (result.code !== 0) {
+      this.log(`[ws] 读不到 ${base}..${tip} 的提交数：${result.stderr.trim().slice(0, 200)}`)
+      return null
+    }
+    const parsed = Number.parseInt(result.stdout.trim(), 10)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  /**
+   * 给即将丢弃的分支打一个轻量 tag 留证，返回 tag 名；失败返回 null。
+   *
+   * 打 tag 而不是保留分支：分支留在仓库里会和「开工时删同名残留分支」的流程打架
+   * （下一次同号工单开工要删它），而 tag 不占分支命名空间、`git log --graph` 之外
+   * 还能直接 `git show <tag>` 找回原始产出。
+   */
+  private async tagAbandoned(ticketNo: string, branch: string): Promise<string | null> {
+    const tag = `abandoned/${safeRefPart(ticketNo)}-${compactTimestamp(this.now())}`
+    const created = await this.git(['tag', tag, `refs/heads/${branch}`])
+    if (created.code !== 0) {
+      this.log(`[ws] 打 tag ${tag} 失败：${created.stderr.trim().slice(0, 200)}`)
+      return null
+    }
+    this.log(`[ws] 丢弃前留证：${tag}`)
+    return tag
+  }
+
+  /**
+   * 失败收尾：stash 残留 → 切主干 → 给已提交的改动打 tag 留证 → 删分支。
    *
    * 顺序不能反：必须先 stash，再切分支 —— 切分支会把未跟踪文件带到主干上去。
+   *
+   * 为什么删分支前要打 tag（2026-11-23 用户原则「不合并 ≠ 销毁现场」）：
+   * 旧实现直接 `branch -D`，失败单里已经提交的调试过程就随分支一起没了，
+   * 事后想看一眼「它到底改到哪一步」都做不到。tag 指在分支 tip 上，
+   * 不动主干、不占分支名，`git show abandoned/<票号>-<时间戳>` 就能把现场捞回来。
+   * **没有提交就不打 tag**：空分支没有现场可留，多一个 tag 只会让人以为有东西可看。
+   *
+   * 未提交的残留照旧走 `stashResidue`，那是用户明确要求的「残留已暂存为 stash@{n}」。
    */
   async finishFailure(ticketNo: string): Promise<WorkspaceFinish> {
     const branch = branchFor(ticketNo)
@@ -281,29 +465,50 @@ export class GitWorkspace {
     if (current !== this.mainBranch) {
       const back = await this.git(['checkout', this.mainBranch])
       if (back.code !== 0) {
-        return {
-          merged: false,
-          mergedSha: null,
+        return this.finishResult({
           stashed,
-          conflict: false,
           detail: `切回 ${this.mainBranch} 失败，分支 ${branch} 保留：${back.stderr.trim().slice(0, 200)}`,
-        }
+        })
       }
     }
 
-    if (await this.branchExists(branch)) {
-      const del = await this.git(['branch', '-D', branch])
-      const detail = `已丢弃分支 ${branch}（改动不进主干）${del.code === 0 ? '' : `；删除失败：${del.stderr.trim().slice(0, 120)}`}`
-      this.log(`[ws] ${ticketNo} 失败收尾：${detail}`)
-      return { merged: false, mergedSha: null, stashed, conflict: false, detail }
+    if (!(await this.branchExists(branch))) {
+      return this.finishResult({
+        stashed,
+        detail: `分支 ${branch} 不存在（无可丢弃的提交）`,
+      })
     }
-    return {
-      merged: false,
-      mergedSha: null,
-      stashed,
-      conflict: false,
-      detail: `分支 ${branch} 不存在（无可丢弃的提交）`,
+
+    const commits = await this.countCommits(this.mainBranch, branch)
+    if (commits === null) {
+      // 数不清有多少提交就不敢删：删错了就再也找不回来。
+      return this.finishResult({
+        stashed,
+        detail: `读不到分支 ${branch} 的提交数，未删除分支（请人工确认）`,
+      })
     }
+
+    let tag: string | null = null
+    if (commits > 0) {
+      tag = await this.tagAbandoned(ticketNo, branch)
+      if (tag === null) {
+        // tag 打不上就不删分支：宁可留一条待人工处理的分支，也不能悄悄销毁产出。
+        return this.finishResult({
+          stashed,
+          detail: `打 tag 留证失败，分支 ${branch}（${commits} 个提交）保留未删（请人工确认）`,
+        })
+      }
+    }
+
+    const del = await this.git(['branch', '-D', branch])
+    const removed = del.code === 0
+    const detail =
+      tag === null
+        ? `已丢弃分支 ${branch}（无提交产出，未打 tag）`
+        : `已丢弃分支 ${branch}（${commits} 个提交已打 tag ${tag} 留证，不进主干）`
+    const finalDetail = removed ? detail : `${detail}；删除失败：${del.stderr.trim().slice(0, 120)}`
+    this.log(`[ws] ${ticketNo} 失败收尾：${finalDetail}`)
+    return this.finishResult({ stashed, abandonedTag: tag, detail: finalDetail })
   }
 
   /**
