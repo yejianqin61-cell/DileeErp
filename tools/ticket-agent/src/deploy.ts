@@ -314,6 +314,37 @@ function tail(result: CommandResult, lines = 8): string {
   return text.split('\n').slice(-lines).join(' | ')
 }
 
+/**
+ * 从门禁输出里把「哪一条测试红了」挑出来，放在报错的最前面。
+ *
+ * 为什么需要（2026-11-24）：T-0028 的门禁连续失败三次，群里看到的都是一屏
+ * 「✓ ... ✓ ...」加最后一行的 `Test Files 1 failed`。失败的那条
+ * （`testid-pages.test.ts` 的「没有未登记的页面」）被压在几百行 ✓ 中间，
+ * 于是三次重试都像同一个说不清的怪问题。**报错要指向那一行，而不是指向整个套件。**
+ *
+ * 认这几种标记，够覆盖 vitest 与 node:test：
+ *   - vitest：` FAIL  path > suite > case`、`AssertionError: ...`
+ *   - node:test：`not ok N - 名字`、`# Subtest: ...`
+ *   - tsc/vitest 通用：`error TS####`、`× 名字`
+ */
+export function pickGateFailures(output: string, limit = 6): string[] {
+  const lines = output.split('\n').map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').trimEnd())
+  const picked: string[] = []
+  const push = (line: string): void => {
+    if (line.length === 0) return
+    if (picked.includes(line)) return
+    picked.push(line.length > 240 ? `${line.slice(0, 240)}…` : line)
+  }
+  for (const line of lines) {
+    if (/^\s*(FAIL|×|✗)\s/.test(line)) push(line.trim())
+    else if (/^\s*not ok \d+ - /.test(line)) push(line.trim())
+    else if (/AssertionError|Expected:|Received:/.test(line) && picked.length > 0) push(line.trim())
+    else if (/^\s*(src|apps|test)\/.*error TS\d+/.test(line)) push(line.trim())
+    if (picked.length >= limit) break
+  }
+  return picked
+}
+
 interface DeployState {
   phase: DeployPhase
   release: string
@@ -794,7 +825,11 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
           }
           throw new DeployFailure(
             'test',
-            `测试门禁失败：${label}（退出码 ${result.code}）：${tail(result, 20)}\n完整日志：${logPath}`,
+            (() => {
+              const failures = pickGateFailures(`${result.stdout}\n${result.stderr}`)
+              const head = failures.length === 0 ? '' : `\n失败的具体用例：\n- ${failures.join('\n- ')}`
+              return `测试门禁失败：${label}（退出码 ${result.code}）${head}\n输出尾部：${tail(result, 20)}\n完整日志：${logPath}`
+            })(),
           )
         }
       }

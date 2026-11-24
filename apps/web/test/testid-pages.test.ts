@@ -58,6 +58,10 @@ const EXPECTED: Record<string, string> = {
   "warehouse/raw-material-storage/page.tsx": "page-warehouse-raw-material-storage",
   "warehouse/finished-goods-storage/page.tsx": "page-warehouse-finished-goods-storage",
   "warehouse/stocktakes/page.tsx": "page-warehouse-stocktakes",
+  // 跨仓调拨（2026-11-24，T-0028）：同安 → 大田/晋江，双边库存联动。
+  // 补登记晚了一步：页面当时已带 data-testid="page-warehouse-transfers"，
+  // 只是漏了这里的清单，于是部署门禁连续三次卡在「有未登记的页面」。
+  "warehouse/transfers/page.tsx": "page-warehouse-transfers",
   "finance/page.tsx": "page-finance",
   "finance/receivable/page.tsx": "page-finance-receivable",
   "finance/payable/page.tsx": "page-finance-payable",

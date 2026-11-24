@@ -7,6 +7,7 @@ import test from 'node:test'
 import {
   countMigrationDirs,
   defaultDeployTimeouts,
+  pickGateFailures,
   runDeploy,
   shortVersion,
   type CommandInput,
@@ -432,6 +433,38 @@ test('测试门禁失败：不切换', async () => {
   } finally {
     harness.cleanup()
   }
+})
+
+// ── 门禁报错要指名道姓（2026-11-24 T-0028 连续三次部署失败）──────────────
+// 群里当时看到的是几百行 ✓ 加一句 `Test Files 1 failed`，没人知道是哪条红的。
+// 重试三次都像同一个说不清的怪问题 —— 失败信息必须指向那一行。
+
+test('pickGateFailures：从 vitest 输出里挑出 FAIL 行与断言行', () => {
+  const output = [
+    ' ✓ test/a.test.ts (3 tests) 100ms',
+    ' ✓ test/b.test.ts (2 tests) 90ms',
+    ' FAIL  test/testid-pages.test.ts > data-testid 约定 > 没有未登记的页面',
+    'AssertionError: expected [ …(56) ] to deeply equal [ …(55) ]',
+    ' ✓ test/c.test.ts (1 test) 10ms',
+    ' Test Files  1 failed | 88 passed (89)',
+  ].join('\n')
+  const picked = pickGateFailures(output)
+  assert.ok(picked.some((line) => line.includes('FAIL') && line.includes('testid-pages.test.ts')))
+  assert.ok(picked.some((line) => line.includes('AssertionError')), '断言细节要带上，否则看不出差在哪')
+  assert.ok(!picked.some((line) => line.includes('✓')), '通过的行不该混进来')
+})
+
+test('pickGateFailures：也认 node:test 的 not ok 与 tsc 的 error TS', () => {
+  const nodeTest = ['ok 1 - 通过', 'not ok 2 - 结算账户必须有 4 项', '  # fail 1'].join('\n')
+  assert.deepEqual(pickGateFailures(nodeTest), ['not ok 2 - 结算账户必须有 4 项'])
+
+  const tsc = ['src/a.ts(3,1): error TS2322: Type string is not assignable', 'npm ERR! code 1'].join('\n')
+  assert.ok(pickGateFailures(tsc).some((line) => line.includes('error TS2322')))
+})
+
+test('pickGateFailures：全绿输出返回空（不能凭空造出失败）', () => {
+  const output = [' ✓ test/a.test.ts (3 tests) 100ms', ' Test Files  89 passed (89)'].join('\n')
+  assert.deepEqual(pickGateFailures(output), [])
 })
 
 test('skipTests 时不跑测试门禁', async () => {
