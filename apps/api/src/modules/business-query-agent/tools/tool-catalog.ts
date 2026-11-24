@@ -17,21 +17,45 @@ export type Catalog = {
 
 const specKey = (tool: string, operation: string) => `${tool}:${operation}`;
 
+export type CatalogReconciliation = {
+  missingOperationSpecs: string[];
+  orphanOperationSpecs: string[];
+  missingModuleSpecs: string[];
+  orphanModuleSpecs: string[];
+};
+
+export function reconcileCatalog(
+  capabilities: readonly ToolCapability[],
+  operationSpecs: Record<string, OperationSpec>,
+  moduleSpecs: readonly ModuleSpec[],
+): CatalogReconciliation {
+  const capabilityKeys = capabilities.map((capability) => specKey(capability.tool, capability.operation));
+  const specKeys = Object.keys(operationSpecs);
+  const moduleTools: string[] = moduleSpecs.map((spec) => spec.tool);
+  return {
+    missingOperationSpecs: capabilityKeys.filter((key) => !specKeys.includes(key)),
+    orphanOperationSpecs: specKeys.filter((key) => !capabilityKeys.includes(key)),
+    missingModuleSpecs: AGENT_TOOLS.filter((tool) => !moduleTools.includes(tool)),
+    orphanModuleSpecs: moduleTools.filter((tool) => !(AGENT_TOOLS as readonly string[]).includes(tool)),
+  };
+}
+
 export function buildCatalog(
   capabilities: readonly ToolCapability[] = TOOL_CAPABILITIES,
   operationSpecs: Record<string, OperationSpec> = OPERATION_SPECS,
   moduleSpecs: readonly ModuleSpec[] = MODULE_SPECS,
 ): Catalog {
-  const entries: CatalogEntry[] = capabilities.map((capability) => {
-    const spec = operationSpecs[specKey(capability.tool, capability.operation)];
-    if (!spec) throw new Error(`目录缺少 operation 规格：${specKey(capability.tool, capability.operation)}`);
-    return { ...spec, tool: capability.tool, operation: capability.operation, minAccess: capability.minAccess };
-  });
-  const modules = AGENT_TOOLS.map((tool) => {
-    const spec = moduleSpecs.find((item) => item.tool === tool);
-    if (!spec) throw new Error(`目录缺少模块声明：${tool}`);
-    return spec;
-  });
+  const result = reconcileCatalog(capabilities, operationSpecs, moduleSpecs);
+  if (Object.values(result).some((list) => list.length > 0)) {
+    throw new Error(`目录与能力表不一致：${JSON.stringify(result)}`);
+  }
+  const entries: CatalogEntry[] = capabilities.map((capability) => ({
+    ...operationSpecs[specKey(capability.tool, capability.operation)],
+    tool: capability.tool,
+    operation: capability.operation,
+    minAccess: capability.minAccess,
+  }));
+  const modules = AGENT_TOOLS.map((tool) => moduleSpecs.find((item) => item.tool === tool) as ModuleSpec);
   return { modules, entries };
 }
 
