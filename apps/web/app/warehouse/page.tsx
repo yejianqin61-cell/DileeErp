@@ -251,6 +251,10 @@ export default function WarehousePage() {
           <Button asChild variant="secondary">
             <Link href="/warehouse/stocktakes">库存盘点</Link>
           </Button>
+          {/* 跨仓调拨（T-0028）：源仓固定同安，目标仓大田/晋江。 */}
+          <Button asChild variant="secondary">
+            <Link href="/warehouse/transfers">跨仓调拨</Link>
+          </Button>
           <Button asChild variant="secondary">
             <Link href="/production/material-issues">原料流转</Link>
           </Button>
