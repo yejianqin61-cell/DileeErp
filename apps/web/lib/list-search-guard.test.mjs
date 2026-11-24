@@ -47,6 +47,7 @@ const LIST_SCREENS_WITH_SEARCH = [
   ["app/procurement/materials/page.tsx", "物料清单"],
   ["app/procurement/suppliers/page.tsx", "供应商池"],
   ["app/warehouse/stocktakes/page.tsx", "盘点单"],
+  ["app/warehouse/transfers/page.tsx", "跨仓调拨记录"],
   ["app/warehouse/raw-material-storage/page.tsx", "原料仓储情况"],
   ["components/sales/customer-pool.tsx", "客户池"],
   ["components/bom/bom-workbench.tsx", "BOM 工作区明细行"],
