@@ -39,10 +39,10 @@ test("两档都保留句柄约束与不得编造", async () => {
   }
 });
 
-test("三个无根入口由目录点名，且此时不提 describe_module", async () => {
+test("三个无根入口由目录点名，并提示用 catalog_query 展开", async () => {
   const { content } = await firstSystemPrompt("full");
   for (const name of ["list_documents", "list_low_stock_materials", "list_overdue_arrivals"]) assert.ok(content.includes(name), name);
-  assert.equal(content.includes("describe_module"), false);
+  assert.ok(content.includes("catalog_query") && content.includes("describe_module"));
 });
 
 test("目录跟随能力表：多一条带规格的 capability，对应模块计数加一", () => {

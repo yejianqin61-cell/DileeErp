@@ -5,7 +5,8 @@ import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmToolCall,
 import type { QueryFact } from "./tools/query-fact";
 import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
-import { toolRegistry } from "./tools/tool-registry";
+import { CATALOG_TOOL, toolRegistry } from "./tools/tool-registry";
+import { describeModule } from "./tools/tool-catalog";
 import { buildSystemPrompt } from "./tools/system-prompt";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
 import { AgentContextManager } from "./context-manager";
@@ -184,6 +185,17 @@ export class AgentOrchestrator {
             continue;
           }
           attempted += 1;
+          if (call.tool === CATALOG_TOOL) {
+            const described = await this.describeCatalog(runId, principal, call, run.accessLevel as AgentAccessLevel);
+            messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: described.ok ? described.content : JSON.stringify({ error: { code: described.code, message: described.message } }) });
+            if (described.ok) continue;
+            recoverableFailures += 1;
+            if (recoverableFailures >= AGENT_MAX_RECOVERABLE_TOOL_FAILURES) {
+              exhausted = { code: described.code, message: described.message };
+              break;
+            }
+            continue;
+          }
           await this.appendToolArgs(runId, call);
           const resolved = this.resolveRootCall(call, searchRefs, searchedOrderNos);
           const outcome = resolved.error
@@ -401,6 +413,25 @@ export class AgentOrchestrator {
     }).catch(() => {});
     this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: 0, error_code: code });
     return { ok: false, code, message };
+  }
+
+  private async describeCatalog(runId: string, principal: AgentPrincipal, call: AgentLlmToolCall, accessLevel: AgentAccessLevel): Promise<{ ok: true; content: string } | { ok: false; code: string; message: string }> {
+    await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } }] });
+    const startedAt = Date.now();
+    const moduleName = typeof call.args?.module === "string" ? call.args.module : "";
+    try {
+      const content = JSON.stringify(describeModule(moduleName, accessLevel));
+      await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "completed" } }] });
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "completed", result_rows: 0, duration_ms: Date.now() - startedAt });
+      return { ok: true, content };
+    } catch (error) {
+      const code = httpErrorCode(error) ?? "AGENT_TOOL_FAILED";
+      if (!(error instanceof HttpException && RECOVERABLE_TOOL_ERROR_CODES.has(code))) throw error;
+      const message = httpErrorMessage(error, "目录展开失败");
+      await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "failed", code } }] }).catch(() => {});
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: Date.now() - startedAt, error_code: code });
+      return { ok: false, code, message };
+    }
   }
 
   private async executeTool(runId: string, principal: AgentPrincipal, call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {

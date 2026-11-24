@@ -69,3 +69,8 @@ test("失败原因翻成人话；认不出的错误码不把内部细节甩给�
   assert.equal(toolErrorReason("SOME_INTERNAL_STACK_CODE"), "查询没有完成");
   assert.equal(toolErrorReason("AGENT_INTERNAL_ERROR").includes("AGENT"), false);
 });
+
+test("目录工具有中文标签：catalog_query/describe_module", () => {
+  assert.equal(toolOperationLabel("catalog_query", "describe_module"), "查看工具说明");
+  assert.equal(AGENT_TOOL_LABELS.catalog_query, "工具目录");
+});

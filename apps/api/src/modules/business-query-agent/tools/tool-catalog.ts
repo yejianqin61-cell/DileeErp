@@ -1,3 +1,4 @@
+import { UnprocessableEntityException } from "@nestjs/common";
 import type { AgentAccessLevel } from "../access-level";
 import { MODULE_SPECS, OPERATION_SPECS, type ModuleSpec, type OperationSpec } from "./tool-catalog-specs";
 import { AGENT_TOOLS, TOOL_CAPABILITIES, type AgentToolName, type ToolCapability } from "./tool-registry";
@@ -72,4 +73,35 @@ export function renderL1(accessLevel: AgentAccessLevel, catalog: Catalog = build
     .filter(({ count }) => count > 0)
     .map(({ module, count }) => `- ${module.tool} ${module.title} ${count} 个：${module.scope}。不支持：${module.negatives.join("、")}`);
   return ["可用查询模块：", ...lines].join("\n");
+}
+
+export type DescribedOperation = {
+  operation: string;
+  question_shape: string;
+  input: string;
+  output: string;
+  boundary: string;
+  accepts: string[];
+};
+
+export type DescribedModule = { module: AgentToolName; title: string; operations: DescribedOperation[] };
+
+export function describeModule(module: string, accessLevel: AgentAccessLevel, catalog: Catalog = buildCatalog()): DescribedModule {
+  const entries = candidateOperations("", accessLevel, catalog).filter((entry) => entry.tool === module);
+  const spec = catalog.modules.find((item) => item.tool === module);
+  if (!spec || entries.length === 0) {
+    throw new UnprocessableEntityException({ code: "AGENT_TOOL_ARGUMENT_INVALID", message: `未知模块：${module}`, details: [] });
+  }
+  return {
+    module: spec.tool,
+    title: spec.title,
+    operations: entries.map((entry) => ({
+      operation: entry.operation,
+      question_shape: entry.questionShape,
+      input: entry.input,
+      output: entry.output,
+      boundary: entry.boundary,
+      accepts: entry.accepts,
+    })),
+  };
 }

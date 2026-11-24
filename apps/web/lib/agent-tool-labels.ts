@@ -18,10 +18,12 @@ export const AGENT_TOOL_LABELS: Record<string, string> = {
   production_query: "生产",
   warehouse_query: "库存",
   finance_query: "财务",
+  catalog_query: "工具目录",
 };
 
 /** 35 个内部 operation → 业务对象（用户看得懂的词）。 */
 export const AGENT_OPERATION_LABELS: Record<string, string> = {
+  describe_module: "查看工具说明",
   // order_query
   search_documents: "单号检索",
   search_orders: "销售订单",

@@ -3,7 +3,7 @@ import { generateText, jsonSchema, stepCountIs, streamText, tool as defineTool, 
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmStreamChunk } from "./llm-provider";
 import { mapModelError } from "./model-errors";
-import { AGENT_TOOLS, TOOL_CAPABILITIES, type AgentToolName } from "./tools/tool-registry";
+import { AGENT_TOOLS, CATALOG_TOOL, DESCRIBE_MODULE_OPERATION, TOOL_CAPABILITIES, type AgentCallableToolName, type AgentToolName } from "./tools/tool-registry";
 
 /**
  * DeepSeek provider（R-4）：模型协议、参数解析与消息组装交给 AI SDK，
@@ -44,6 +44,20 @@ function domainInputSchema(tool: AgentToolName) {
       to: { type: "string", description: "仅 list_documents：更新日期上限，格式 YYYY-MM-DD" },
     },
     required: ["operation"],
+    additionalProperties: false,
+  });
+}
+
+const CATALOG_TOOL_DESCRIPTION = "展开某个查询模块里各 operation 的适用问法、输入要求、输出与不覆盖的边界。不确定该用哪个 operation 时先展开对应模块；不查业务数据。";
+
+function catalogInputSchema(tools: readonly AgentToolName[]) {
+  return jsonSchema<{ operation: string; module: string }>({
+    type: "object",
+    properties: {
+      operation: { type: "string", enum: [DESCRIBE_MODULE_OPERATION], description: "固定为 describe_module" },
+      module: { type: "string", enum: [...tools], description: "要展开的模块名，取自系统指令里的模块列表" },
+    },
+    required: ["operation", "module"],
     additionalProperties: false,
   });
 }
@@ -109,6 +123,7 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     for (const name of tools) {
       set[name] = defineTool({ description: TOOL_DESCRIPTIONS[name], inputSchema: domainInputSchema(name) });
     }
+    if (tools.length > 0) set[CATALOG_TOOL] = defineTool({ description: CATALOG_TOOL_DESCRIPTION, inputSchema: catalogInputSchema(tools) });
     return set;
   }
 
@@ -124,12 +139,12 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
       });
       const toolCalls = [];
       for (const call of result.toolCalls) {
-        if (!tools.includes(call.toolName as AgentToolName)) continue; // 未授权工具名直接丢弃
+        if (call.toolName !== CATALOG_TOOL && !tools.includes(call.toolName as AgentToolName)) continue; // 未授权工具名直接丢弃
         const parsed = (typeof call.input === "string" ? safeParse(call.input) : call.input) as { operation?: unknown } | null;
         const operation = typeof parsed?.operation === "string" ? parsed.operation : "";
         if (!operation) continue;
         const { operation: _omitted, ...rest } = parsed as Record<string, unknown>;
-        toolCalls.push({ id: call.toolCallId, tool: call.toolName as AgentToolName, operation, args: rest });
+        toolCalls.push({ id: call.toolCallId, tool: call.toolName as AgentCallableToolName, operation, args: rest });
       }
       return { toolCalls };
     } catch (error) {
