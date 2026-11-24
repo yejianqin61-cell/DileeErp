@@ -68,6 +68,9 @@ const EXPECTED: Record<string, string> = {
   "finance/cash-flow/page.tsx": "page-finance-cash-flow",
   "finance/banks/page.tsx": "page-finance-banks",
   "finance/bank-transfers/page.tsx": "page-finance-bank-transfers",
+  // 结算方式设置（2026-11-23，T-0027）：结算账户字典的维护页。
+  // 与 finance/banks（银行账户主数据）不是同一件事，说明见该页组件文件头。
+  "finance/settlements/page.tsx": "page-finance-settlements",
   // 收付款单存档（2026-09-26 用户要的「保存键」）：保存过的单子在这一页找回 / 再导出 / 作废。
   "finance/slips/page.tsx": "page-finance-slips",
   "finance/reports/page.tsx": "page-finance-reports",
