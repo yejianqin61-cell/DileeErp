@@ -19,7 +19,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { readdirSync, readFileSync, statSync } = require("node:fs");
 const { join } = require("node:path");
-const { SETTLEMENT_ACCOUNT_DICTIONARY_KEY, DEFAULT_SETTLEMENT_ACCOUNTS } = require("../../dist/modules/finance/cash-flow-catalog.js");
+const { SETTLEMENT_ACCOUNT_DICTIONARY_KEY, LEGACY_SETTLEMENT_ACCOUNTS, DEFAULT_SETTLEMENT_ACCOUNTS } = require("../../dist/modules/finance/cash-flow-catalog.js");
 const { LEGACY_CASH_FLOW_ITEM_DICTIONARY_KEY, LEGACY_CASH_FLOW_ITEM_SUBJECTS } = require("../../dist/modules/finance/accounting-subject-catalog.js");
 
 const migrationsRoot = join(__dirname, "..", "..", "prisma", "migrations");
@@ -47,13 +47,33 @@ test("cash flow migration seeds both dictionaries with every default entry", () 
   assert.ok(sql.includes(`'${LEGACY_CASH_FLOW_ITEM_DICTIONARY_KEY}'`), "收支项目的字典 key 必须写进迁移");
   assert.ok(sql.includes(`'${SETTLEMENT_ACCOUNT_DICTIONARY_KEY}'`), "结算账户的字典 key 必须写进迁移");
   assert.equal(LEGACY_CASH_FLOW_ITEM_SUBJECTS.length, 37, "老表「项目」列有 37 行");
-  assert.equal(DEFAULT_SETTLEMENT_ACCOUNTS.length, 2, "老表「结算方式」里出现过 2 个银行账户");
+  // 迁移是**历史文件**（不可改）：它只种当年老表里的 2 个账户。
+  // 2026-11-23 新增的两项走 seed / 财务页「结算方式」的补齐按钮，绝不能反过来要求迁移文件补种。
+  assert.equal(LEGACY_SETTLEMENT_ACCOUNTS.length, 2, "老表「结算方式」里出现过 2 个银行账户");
   for (const legacy of LEGACY_CASH_FLOW_ITEM_SUBJECTS) {
     assert.ok(sql.includes(`('${legacy.legacyKey}'`), `字典项「${legacy.legacyKey}」必须写进迁移，否则老库升级后这一项缺失`);
   }
-  for (const item of DEFAULT_SETTLEMENT_ACCOUNTS) {
+  for (const item of LEGACY_SETTLEMENT_ACCOUNTS) {
     assert.ok(sql.includes(`('${item.key}'`), `字典项「${item.label}」必须写进迁移，否则老库升级后这一项缺失`);
   }
+});
+
+test("settlement catalogue keeps the frozen legacy entries and adds the two requested accounts", () => {
+  // 当前内置清单 = 历史 2 项（顺序/排序不变，老库不会因为 seed 重跑被打乱）+ 用户新增 2 项。
+  assert.deepEqual(
+    DEFAULT_SETTLEMENT_ACCOUNTS.slice(0, LEGACY_SETTLEMENT_ACCOUNTS.length).map((item) => item.key),
+    LEGACY_SETTLEMENT_ACCOUNTS.map((item) => item.key),
+    "历史两项必须排在最前，且 key 逐字不变（seed 是 upsert，改了 key 等于新建一行）",
+  );
+  const labels = DEFAULT_SETTLEMENT_ACCOUNTS.map((item) => item.label);
+  assert.ok(labels.includes("中国银行-人民币账户"), "必须内置「中国银行-人民币账户」");
+  assert.ok(labels.includes("备用金（招商银行账户）"), "必须内置「备用金（招商银行账户）」");
+  assert.equal(DEFAULT_SETTLEMENT_ACCOUNTS.length, 4, "当前内置 4 个结算账户");
+  assert.deepEqual(
+    DEFAULT_SETTLEMENT_ACCOUNTS.map((item) => item.sortOrder),
+    [10, 20, 30, 40],
+    "排序按清单顺序递增，新增项排在历史项之后",
+  );
 });
 
 test("cash flow migration dictionary writes are idempotent and skip an empty database", () => {
