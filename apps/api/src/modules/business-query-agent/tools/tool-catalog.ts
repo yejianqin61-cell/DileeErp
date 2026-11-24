@@ -90,7 +90,8 @@ export function describeModule(module: string, accessLevel: AgentAccessLevel, ca
   const entries = candidateOperations("", accessLevel, catalog).filter((entry) => entry.tool === module);
   const spec = catalog.modules.find((item) => item.tool === module);
   if (!spec || entries.length === 0) {
-    throw new UnprocessableEntityException({ code: "AGENT_TOOL_ARGUMENT_INVALID", message: `未知模块：${module}`, details: [] });
+    const available = [...new Set(candidateOperations("", accessLevel, catalog).map((entry) => entry.tool))];
+    throw new UnprocessableEntityException({ code: "AGENT_CATALOG_MODULE_UNKNOWN", message: `没有这个模块。可用模块：${available.join("、")}`, details: [] });
   }
   return {
     module: spec.tool,
