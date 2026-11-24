@@ -6,6 +6,7 @@ import type { QueryFact } from "./tools/query-fact";
 import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
 import { toolRegistry } from "./tools/tool-registry";
+import { buildSystemPrompt } from "./tools/system-prompt";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
 import { AgentContextManager } from "./context-manager";
 import type { AgentObservability } from "./observability";
@@ -24,7 +25,6 @@ import type { AgentObservability } from "./observability";
  *   - 致命失败（撤权、取消、超时、非业务异常）：仍直接收进 failed 终态。
  */
 
-const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。任何单号（销售单、采购单、生产单）都先用 order_query 的 search_documents 检索，再原样使用结果里的 order_ref 做后续查询，不要复制或改写单号。没有具体单号、问的是列表或跨单汇总时，用 list_documents（按状态/客户/产品/日期）、list_low_stock_materials（哪些物料库存不足）、list_overdue_arrivals（哪些采购到货超期），这三个都不需要 order_ref。";
 export const AGENT_MAX_TOOL_STEPS = 16;
 export const AGENT_MAX_PLAN_STEPS = 4;
 export const AGENT_MAX_RECOVERABLE_TOOL_FAILURES = 3;
@@ -141,7 +141,7 @@ export class AgentOrchestrator {
       ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel)
       : [];
     const messages: AgentLlmMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: buildSystemPrompt(run.accessLevel as AgentAccessLevel) },
       ...history,
       { role: "user", content: run.question },
     ];
