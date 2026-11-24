@@ -81,15 +81,15 @@ export const OPERATION_SPECS: Record<string, OperationSpec> = {
   "order_query:get_order_overview": op(
     "一张订单整体走到哪了、各环节数量与进度",
     "需单据根",
-    "单个对象：销售、采购、生产、库存各环节的数量与进度汇总，整体状态",
-    "不含任何金额；整体状态不受应收应付影响；不列明细行",
+    "单个对象：销售状态、BOM 状态，采购、原料库存、生产、成品质检、成品库存、发货各环节的状态与数量汇总，整体状态及中文标签、阻塞项、更新时间",
+    "不含任何金额，整体状态只由非财务环节推出；不列明细行",
     ["order_ref"],
   ),
   "order_query:get_order_status": op(
     "一张订单当前处于什么状态",
     "需单据根",
-    "单个对象：订单状态与各环节进度的简要汇总",
-    "不含金额与财务状态；不列明细行",
+    "单个对象：销售状态、BOM 状态、整体状态及中文标签、阻塞项",
+    "不含各环节数量（要数量用 get_order_overview）；不含金额与财务状态；不列明细行",
     ["order_ref"],
   ),
   "order_query:get_order_timeline": op(
@@ -102,8 +102,8 @@ export const OPERATION_SPECS: Record<string, OperationSpec> = {
   "order_query:get_order_alerts": op(
     "一张订单现在有哪些阻塞或告警",
     "需单据根；可选页码",
-    "告警行：来源类型、分级、处理情况",
-    "只含本订单按来源下推的告警，不是全库告警；不跨订单汇总；每页 20 行",
+    "告警行：来源类型、告警类型、分级、标题、处理建议、处理状态、时间",
+    "只有三类来源：生产日报告警、成品质检不合格、库存净变动为负；只含本订单，不是全库告警；不跨订单汇总；每页 20 行",
     ["order_ref", "page"],
   ),
   "order_query:get_order_attachments": op(
@@ -144,8 +144,8 @@ export const OPERATION_SPECS: Record<string, OperationSpec> = {
   "procurement_query:get_purchase_plans": op(
     "这张订单的采购计划要采什么、采多少",
     "需单据根；可选页码",
-    "计划行：计划号、BOM 版本、创建时间，及物料型号与数量",
-    "不含价格；每页 20 行",
+    "计划物料行：计划号、BOM 版本、物料名称、型号、数量、单位、供应商名称、计划创建时间",
+    "不含价格；每页 20 行，分页按物料行而不是按计划",
     ["order_ref", "page"],
   ),
   "procurement_query:list_overdue_arrivals": op(
@@ -208,7 +208,7 @@ export const OPERATION_SPECS: Record<string, OperationSpec> = {
     "这张订单 BOM 里的物料现在库里还有多少",
     "需单据根",
     "物料行：物料编码、名称、单位、当前实存量",
-    "是物料的全局实存量，不是这张订单专属的库存",
+    "只含这张订单 BOM 里的原料，实存量含报废库存且为全局口径，不是这张订单专属的库存；实存量为 0 的物料不出现",
     ["order_ref"],
   ),
   "warehouse_query:list_low_stock_materials": op(
@@ -290,9 +290,9 @@ export const OPERATION_SPECS: Record<string, OperationSpec> = {
   ),
   "finance_query:get_order_cost_profit": op(
     "这张订单的成本与利润",
-    "需单据根；仅财务档",
-    "订单行：数量、金额、成本与利润核算结果",
-    "没有期间参数，沿用核算表的无期间语义，月度管理费不纳入",
+    "需单据根；仅财务档；页码参数被接受但不起作用",
+    "单个对象：是否已出货、币种、销售金额、本币收入、原料成本、人工、总成本、利润、口径说明与脚注",
+    "只核算已确认或已关闭且已出货的订单，其余只返回未出货说明而没有金额；原料成本缺采购价或无 BOM 时按 0 计入，利润会偏高，见脚注；没有期间参数，月度管理费不纳入",
     ["order_ref", "page"],
   ),
   "finance_query:get_order_payroll": op(
