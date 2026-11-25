@@ -3662,3 +3662,31 @@ model AgentRunEvent {
   @@unique([runId, seq])
   @@map("agent_run_events")
 }
+
+model AgentGapCandidate {
+  id               String    @id @default(uuid()) @db.Uuid
+  nearestOperation String    @map("nearest_operation") @db.VarChar(60)
+  missing          String    @db.VarChar(20)
+  status           String    @default("accumulating") @db.VarChar(20)
+  dispatchedAt     DateTime? @map("dispatched_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([nearestOperation, missing])
+  @@map("agent_gap_candidates")
+}
+
+model AgentGapReport {
+  id               String   @id @default(uuid()) @db.Uuid
+  candidateId      String   @map("candidate_id") @db.Uuid
+  sessionId        String   @map("session_id") @db.Uuid
+  runId            String   @map("run_id") @db.Uuid
+  missingDetail    String   @map("missing_detail") @db.VarChar(200)
+  missingParam     String?  @map("missing_param") @db.VarChar(20)
+  neededFields     Json     @map("needed_fields")
+  unverifiedFields Json     @map("unverified_fields")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([candidateId, runId])
+  @@map("agent_gap_reports")
+}

@@ -50,6 +50,6 @@ DROP FUNCTION mask_snapshot(jsonb);
 
 -- 5. 不参与口径验证的业务过程数据：审计与 Agent 会话含自然语言原文
 TRUNCATE audit_events;
-TRUNCATE agent_run_events, agent_runs, agent_sessions;
+TRUNCATE agent_run_events, agent_runs, agent_sessions, agent_gap_reports, agent_gap_candidates;
 
 COMMIT;
