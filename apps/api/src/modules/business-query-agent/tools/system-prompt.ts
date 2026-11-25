@@ -6,6 +6,14 @@ const PREFIX =
 
 const CATALOG_HINT = "需要某模块里各 operation 的适用问法、输入要求与边界时，调用 catalog_query（operation 为 describe_module，module 取上面的模块名）。";
 
-export function buildSystemPrompt(accessLevel: AgentAccessLevel): string {
+const GAP_HINT = "如果现有工具确实答不了用户的问题，调用 report_gap 说明缺口，然后告诉用户目前无法回答；能答的就直接查。";
+
+const NEAREST_HINT = "判断缺口时：先在上面的模块里找最接近用户问题的 operation，再说它差什么（分组、筛选、度量、时间序列，或现有工具都不以该对象为主体）。";
+
+export function buildBaseSystemPrompt(accessLevel: AgentAccessLevel): string {
   return `${PREFIX}\n\n${renderL1(accessLevel)}\n${CATALOG_HINT}`;
+}
+
+export function buildSystemPrompt(accessLevel: AgentAccessLevel): string {
+  return `${buildBaseSystemPrompt(accessLevel)}\n\n${GAP_HINT}\n\n${NEAREST_HINT}`;
 }

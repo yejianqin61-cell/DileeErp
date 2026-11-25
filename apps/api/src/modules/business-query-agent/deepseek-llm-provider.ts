@@ -3,7 +3,8 @@ import { generateText, jsonSchema, stepCountIs, streamText, tool as defineTool, 
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmStreamChunk } from "./llm-provider";
 import { mapModelError } from "./model-errors";
-import { AGENT_TOOLS, CATALOG_TOOL, DESCRIBE_MODULE_OPERATION, TOOL_CAPABILITIES, type AgentCallableToolName, type AgentToolName } from "./tools/tool-registry";
+import { GAP_MISSING, GAP_MISSING_PARAMS } from "./tools/report-gap";
+import { AGENT_TOOLS, CATALOG_TOOL, DECLARE_GAP_OPERATION, DESCRIBE_MODULE_OPERATION, GAP_TOOL, TOOL_CAPABILITIES, type AgentCallableToolName, type AgentToolName } from "./tools/tool-registry";
 
 /**
  * DeepSeek provider（R-4）：模型协议、参数解析与消息组装交给 AI SDK，
@@ -58,6 +59,24 @@ export function catalogInputSchema(tools: readonly AgentToolName[]) {
       module: { type: "string", enum: [...tools], description: "要展开的模块名，取自系统指令里的模块列表" },
     },
     required: ["operation", "module"],
+    additionalProperties: false,
+  });
+}
+
+const GAP_TOOL_DESCRIPTION = "只在确认现有工具都答不了用户的问题时调用；换个问法就能答、或查到 0 行，都不是缺口。从现有 operation 里选最接近用户问题的一个，并说明它差什么。只在缺某个筛选参数时填 missing_param。needed_fields 用 `<Prisma 模型>.<字段>` 格式，例如 SalesOrder.orderNo；不确定就不填。";
+
+function gapInputSchema(tools: readonly AgentToolName[]) {
+  const operations = TOOL_CAPABILITIES.filter((capability) => tools.includes(capability.tool)).map((capability) => capability.operation);
+  return jsonSchema<Record<string, unknown>>({
+    type: "object",
+    properties: {
+      nearest_operation: { type: "string", enum: operations, description: "现有 operation 里最接近用户问题的一个" },
+      missing: { type: "string", enum: [...GAP_MISSING], description: "差异类型" },
+      missing_detail: { type: "string", description: "缺口短语，不要照抄用户原话" },
+      missing_param: { type: "string", enum: [...GAP_MISSING_PARAMS], description: "仅当缺某个筛选参数时填" },
+      needed_fields: { type: "array", items: { type: "string" }, description: "<Prisma 模型>.<字段>" },
+    },
+    required: ["nearest_operation", "missing", "missing_detail"],
     additionalProperties: false,
   });
 }
@@ -123,7 +142,10 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     for (const name of tools) {
       set[name] = defineTool({ description: TOOL_DESCRIPTIONS[name], inputSchema: domainInputSchema(name) });
     }
-    if (tools.length > 0) set[CATALOG_TOOL] = defineTool({ description: CATALOG_TOOL_DESCRIPTION, inputSchema: catalogInputSchema(tools) });
+    if (tools.length > 0) {
+      set[GAP_TOOL] = defineTool({ description: GAP_TOOL_DESCRIPTION, inputSchema: gapInputSchema(tools) });
+      set[CATALOG_TOOL] = defineTool({ description: CATALOG_TOOL_DESCRIPTION, inputSchema: catalogInputSchema(tools) });
+    }
     return set;
   }
 
@@ -139,9 +161,11 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
       });
       const toolCalls = [];
       for (const call of result.toolCalls) {
-        if (call.toolName !== CATALOG_TOOL && !tools.includes(call.toolName as AgentToolName)) continue; // 未授权工具名直接丢弃
+        const local = call.toolName === CATALOG_TOOL || call.toolName === GAP_TOOL;
+        if (!local && !tools.includes(call.toolName as AgentToolName)) continue; // 未授权工具名直接丢弃
         const parsed = (typeof call.input === "string" ? safeParse(call.input) : call.input) as { operation?: unknown } | null;
-        const operation = typeof parsed?.operation === "string" ? parsed.operation : "";
+        const declared = typeof parsed?.operation === "string" ? parsed.operation : "";
+        const operation = call.toolName === GAP_TOOL ? DECLARE_GAP_OPERATION : declared;
         if (!operation) continue;
         const { operation: _omitted, ...rest } = parsed as Record<string, unknown>;
         toolCalls.push({ id: call.toolCallId, tool: call.toolName as AgentCallableToolName, operation, args: rest });

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { buildGroup } from "./groups.mjs";
 
 const require = createRequire(import.meta.url);
-const { buildSystemPrompt } = require("../../../apps/api/dist/modules/business-query-agent/tools/system-prompt.js");
+const { buildBaseSystemPrompt } = require("../../../apps/api/dist/modules/business-query-agent/tools/system-prompt.js");
 
 const GAP_HINT = "如果现有工具确实答不了用户的问题，调用 report_gap 说明缺口，然后告诉用户目前无法回答；能答的就直接查。";
 const RULE = "只在确认现有工具都答不了用户的问题时调用；换个问法就能答、或查到 0 行，都不是缺口。";
@@ -16,7 +16,7 @@ const MODULES = ["order_query", "sales_query", "procurement_query", "production_
 test("三组系统指令共用底座与 GAP_HINT，只有各自的追加段不同", () => {
   const systems = ["A", "B", "C"].map((name) => buildGroup(name).system);
   for (const system of systems) {
-    assert.ok(system.startsWith(`${buildSystemPrompt("full")}\n\n${GAP_HINT}`));
+    assert.ok(system.startsWith(`${buildBaseSystemPrompt("full")}\n\n${GAP_HINT}`));
   }
   assert.deepEqual(systems.map((system) => system.includes(NEAREST_HINT)), [false, false, true]);
   assert.deepEqual(systems.map((system) => system.includes(AXIS_TITLE)), [false, true, false]);

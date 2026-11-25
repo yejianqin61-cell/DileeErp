@@ -46,7 +46,7 @@ test("provider：声明 catalog_query 在末尾，module 与 operation 枚举正
   assert.equal(last.name, "catalog_query");
   assert.deepEqual(last.inputSchema.properties.module.enum, ["order_query", "procurement_query"]);
   assert.deepEqual(last.inputSchema.properties.operation.enum, ["describe_module"]);
-  assert.deepEqual(tools.slice(0, -1).map((tool) => tool.name), ["order_query", "procurement_query"]);
+  assert.deepEqual(tools.slice(0, -1).map((tool) => tool.name), ["order_query", "procurement_query", "report_gap"]);
 });
 
 test("编排器：describe_module 结果逐字回灌，不算事实、不触达执行器", async () => {

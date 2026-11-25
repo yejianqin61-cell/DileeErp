@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { buildSystemPrompt } = require("../../../apps/api/dist/modules/business-query-agent/tools/system-prompt.js");
+const { buildBaseSystemPrompt } = require("../../../apps/api/dist/modules/business-query-agent/tools/system-prompt.js");
 const { TOOL_CAPABILITIES } = require("../../../apps/api/dist/modules/business-query-agent/tools/tool-registry.js");
 
 export const GROUP_NAMES = ["A", "B", "C"];
@@ -54,7 +54,7 @@ export function buildGroup(name, records = []) {
   const group = GROUPS[name];
   if (!group) throw new Error(`未知实验组：${name}`);
   return {
-    system: [buildSystemPrompt("full"), GAP_HINT, group.extra].filter(Boolean).join("\n\n"),
+    system: [buildBaseSystemPrompt("full"), GAP_HINT, group.extra].filter(Boolean).join("\n\n"),
     gapTool: { description: `${GAP_RULE}${group.sentence}`, inputSchema: group.schema() },
     record(args) {
       records.push(args);
