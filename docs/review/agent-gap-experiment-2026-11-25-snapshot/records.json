@@ -1,0 +1,3494 @@
+[
+  {
+    "group": "A",
+    "id": "gap-01",
+    "rep": 1,
+    "gap": {
+      "reason": "用户需要按供应商维度、按月（本月）汇总采购金额。procurement_query 的采购计划/采购单/到货查询均明确不含金额单价，list_overdue_arrivals 也声明不按供应商分组汇总；finance_query 的 get_payables 与 get_supplier_payments 虽含金额与供应商，但必须绑定单张订单（order_ref），且边界明确写明\"仅本订单，不是供应商维度的应付汇总\"，get_order_cost_profit 无期间参数。现有工具无法实现跨订单、按供应商、按月度的金额聚合。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-01",
+    "rep": 2,
+    "gap": {
+      "reason": "用户要「按供应商汇总本月采购金额」，属于跨订单、按供应商维度的采购金额汇总。procurement_query 的所有 operation 都明确不含金额/单价（get_purchase_orders 边界写明「不含金额单价」），list_overdue_arrivals 也说明「不按供应商分组汇总、不含金额」；finance_query 的 get_payables 只按单张订单返回应付明细，且边界写明「不是供应商维度的应付汇总」，其余 operation 也都是单订单口径，没有日期区间参数。因此现有工具既没有采购金额字段，也不支持跨订单按供应商汇总。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-01",
+    "rep": 3,
+    "gap": {
+      "reason": "用户要按供应商维度汇总本月采购金额。采购模块（procurement_query）全部查询都不含金额，且明确不按供应商分组汇总；财务模块（finance_query）的应付/付款查询只能针对单张订单（需 order_ref），并明确说明不是供应商维度汇总。因此现有工具无法做到“按供应商汇总本月采购金额”，也无跨订单的期间汇总能力。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-01",
+    "rep": 1,
+    "gap": {
+      "object": "供应商",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-01",
+    "rep": 2,
+    "gap": {
+      "object": "供应商",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-01",
+    "rep": 3,
+    "gap": {
+      "object": "供应商",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-01",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_payables",
+      "missing": "group_by",
+      "missing_detail": "无法按供应商跨订单汇总采购或应付金额，也无法按本月时间范围筛选",
+      "needed_fields": [
+        "供应商",
+        "采购金额",
+        "期间（本月）",
+        "按供应商分组汇总"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-01",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_purchase_orders",
+      "missing": "metric",
+      "missing_detail": "采购模块所有 operation 都不含金额/单价，且都以单张订单为主体，不支持跨订单按供应商分组汇总金额",
+      "needed_fields": [
+        "供应商",
+        "采购金额",
+        "采购日期",
+        "汇总维度"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-01",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_purchase_orders",
+      "missing": "metric",
+      "missing_detail": "采购单查询无金额字段，且不支持按供应商分组汇总，也无按月时间筛选",
+      "needed_fields": [
+        "供应商名称",
+        "采购金额",
+        "采购日期"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-02",
+    "rep": 1,
+    "gap": {
+      "reason": "用户要「最近六个月每月销售订单数量」的按月趋势（跨订单、按月分组的计数汇总）。order_query 的 list_documents 可按更新日期区间列出销售单，但明确「不分组、不计数」且每页最多 20 行，无法可靠按月聚合计数；其余模块都是单张订单维度的明细查询，也不支持跨订单按月汇总统计。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-02",
+    "rep": 2,
+    "gap": {
+      "reason": "用户要的是“最近六个月每月销售订单数量趋势”，属于跨订单、按时间分组的计数统计。现有工具均不支持：order_query.list_documents 虽可按日期区间筛销售单，但边界明确为“不分组、不计数”，且日期口径是更新日期而非下单日期，每页仅 20 行；finance_query 声明不支持跨订单汇总；其余各模块 operation 均需单张订单 order_ref，只做单订单明细。缺少“按销售下单日期按月统计订单数量/趋势”的聚合能力。"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-02",
+    "rep": 3,
+    "gap": {
+      "reason": "用户要「最近六个月每月的销售订单数量趋势」，需要按月份分组的计数统计。现有工具中：order_query 的 list_documents 明确「不分组、不计数」，只能按更新日期区间分页列出销售单明细（每页 20 行），没有按「下单日期」分组统计的接口；没有任何模块提供跨订单的按月汇总/趋势统计。此外本次实际调用 list_documents（2025-01 至 2025-06 各月区间）均只返回占位行「示例字段：示例值」，未获得真实单据数据，无法据此计算数量。"
+    },
+    "domainCallsBeforeGap": 6,
+    "domainCalls": 6,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-02",
+    "rep": 1,
+    "gap": {
+      "object": "单据",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "趋势"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-02",
+    "rep": 2,
+    "gap": {
+      "object": "单据",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "趋势"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-02",
+    "rep": 3,
+    "gap": {
+      "object": "单据",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "趋势"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-02",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "time_series",
+      "missing_detail": "可按更新日期区间列出销售单明细（每页 20 行），但不按月分组计数，也不提供跨订单的月度数量汇总",
+      "needed_fields": [
+        "下单日期（月份）",
+        "销售单数量（按月计数）"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-02",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "time_series",
+      "missing_detail": "按月分组统计销售订单数量（月度趋势）",
+      "needed_fields": [
+        "下单日期",
+        "按月分组计数"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-02",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "time_series",
+      "missing_detail": "销售单按月份分组计数的时间序列，现有列示接口不分组不计数",
+      "needed_fields": [
+        "下单日期（按月分组）",
+        "销售单数量（计数）"
+      ]
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-03",
+    "rep": 1,
+    "gap": {
+      "reason": "用户想按仓库分别查看原料库存（多仓库、全品类的库存分布）。现有库存能力中：get_raw_material_balance 必须以某张订单为根，且只覆盖该订单 BOM 内的物料，实存量为全局口径、不区分仓库；list_low_stock_materials 只列净库存≤0 的不足物料，且明确按物料与单位聚合、不按仓库拆分。没有任何 operation 支持\"按仓库列出全部原料库存余额\"。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-03",
+    "rep": 2,
+    "gap": {
+      "reason": "用户需要按仓库分别统计原料库存。warehouse_query 中唯一返回物料实存量的 get_raw_material_balance 必须绑定某张订单（仅该订单 BOM 内物料），且为全局口径不按仓库拆分；list_low_stock_materials 按物料与单位聚合、明确不按仓库。现有工具无法提供\"按仓库的原料库存余额\"清单。"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-03",
+    "rep": 1,
+    "gap": {
+      "object": "物料",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-03",
+    "rep": 2,
+    "gap": {
+      "object": "物料",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-03",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_raw_material_balance",
+      "missing": "group_by",
+      "missing_detail": "现有原料库存查询只能按单张订单的 BOM 取全局实存量，不能按仓库维度拆分/汇总库存",
+      "needed_fields": [
+        "仓库",
+        "物料编码",
+        "物料名称",
+        "单位",
+        "库存数量"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-03",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_raw_material_balance",
+      "missing": "group_by",
+      "missing_detail": "原料库存余额缺少按仓库维度的分组与汇总，现有余额查询只能以单张订单 BOM 为入口且为全局实存量口径",
+      "needed_fields": [
+        "仓库",
+        "物料编码",
+        "物料名称",
+        "单位",
+        "实存量"
+      ]
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-03",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_raw_material_balance",
+      "missing": "group_by",
+      "missing_detail": "现有库存查询均以单据根为输入或按物料聚合，没有以仓库为维度拆分原料库存的查询",
+      "needed_fields": [
+        "仓库",
+        "物料编码",
+        "物料名称",
+        "单位",
+        "实存量"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-04",
+    "rep": 2,
+    "gap": {
+      "reason": "用户问“本月所有订单的应收账款总额”，属于按期间跨订单的应收汇总需求。finance_query 的 get_receivables 仅支持单张订单（order_ref）且明确不是客户/跨订单汇总；order_query 的 list_documents 按本月日期范围检索未返回真实订单数据（只有占位示例结构），无法先取得本月订单清单再逐单汇总。缺少“按期间汇总应收”的查询能力。"
+    },
+    "domainCallsBeforeGap": 2,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-04",
+    "rep": 3,
+    "gap": {
+      "reason": "用户要\"本月所有订单的应收账款总额\"，这是跨订单、按期间的应收汇总。finance_query 的 get_receivables 仅支持单张订单（需 order_ref），且明确说明\"不是客户维度的应收汇总\"，模块边界也声明不支持跨订单汇总；order_query 的 list_documents 可按更新日期筛选销售单但只返回单据列表（且不支持金额），无法取到应收金额并加总，因此现有工具无法给出该总额。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-04",
+    "rep": 1,
+    "gap": {
+      "object": "单据",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-04",
+    "rep": 2,
+    "gap": {
+      "object": "单据",
+      "metric": "金额",
+      "granularity": "跨单行集",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-04",
+    "rep": 3,
+    "gap": {
+      "object": "单据",
+      "metric": "金额",
+      "granularity": "跨单行集",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-04",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_receivables",
+      "missing": "group_by",
+      "missing_detail": "需要跨订单按月份汇总应收总额，现有应收查询只能按单张订单查明细",
+      "needed_fields": [
+        "订单号",
+        "应收金额",
+        "未收金额",
+        "到期日",
+        "单据日期"
+      ]
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-04",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_receivables",
+      "missing": "metric",
+      "missing_detail": "缺少跨订单的应收金额汇总与按月份期间过滤，只能逐张订单查询应收来源行",
+      "needed_fields": [
+        "订单号",
+        "应收金额",
+        "未收金额",
+        "月份期间",
+        "汇总合计"
+      ]
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-04",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_receivables",
+      "missing": "group_by",
+      "missing_detail": "应收只能按单张订单查询，无法跨订单按月汇总金额",
+      "needed_fields": [
+        "order_ref",
+        "应收金额",
+        "未收金额",
+        "到期日",
+        "订单日期"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-05",
+    "rep": 1,
+    "gap": {
+      "reason": "用户要的是「按客户维度累计订单数」的跨订单聚合统计。现有工具只能：list_documents 按客户名片段列出销售单（每页 20 行，明确不分组、不计数），sales_query 的 get_customer 只返回单张订单的客户编码与名称、并明确说明不是客户维度汇总。没有任何工具能按客户分组计数或跨订单汇总，因此无法给出每个客户的累计订单张数。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-05",
+    "rep": 2,
+    "gap": {
+      "reason": "需要按客户维度对销售订单做分组计数（每个客户累计订单张数），但现有工具均不支持跨订单汇总/计数：order_query.list_documents 虽可按 customer_q 筛选并列出销售单，但明确不分组、不计数且分页 20 行；sales_query.get_customer 仅返回单张订单的客户编码与名称，不是客户维度汇总；各模块也普遍标注不支持跨订单汇总。缺少「按客户统计订单数量」的聚合查询能力。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-05",
+    "rep": 3,
+    "gap": {
+      "reason": "需要按客户分组的订单数量汇总（每个客户累计订单数）。order_query 的 list_documents 只支持按状态/客户/产品/日期列举销售单，明确「不分组、不计数」，每页 20 行；search_orders 不含客户字段；finance_query 明确不支持跨订单汇总。现有模块没有任何按客户聚合计数的能力，需新增「按客户统计订单数」的汇总查询。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-05",
+    "rep": 1,
+    "gap": {
+      "object": "客户",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-05",
+    "rep": 2,
+    "gap": {
+      "object": "客户",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-05",
+    "rep": 3,
+    "gap": {
+      "object": "客户",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-05",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "group_by",
+      "missing_detail": "无法按客户分组统计订单张数；list_documents 只能按客户名筛选后分页列出销售单，不分组不计数，get_customer 只返回单张订单的客户，也不是客户维度汇总",
+      "needed_fields": [
+        "客户名称",
+        "订单张数"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-05",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "group_by",
+      "missing_detail": "按客户分组统计销售单张数",
+      "needed_fields": [
+        "客户名称",
+        "销售单张数"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-05",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "group_by",
+      "missing_detail": "按客户分组统计订单张数",
+      "needed_fields": [
+        "客户名称",
+        "销售单号",
+        "订单数"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-06",
+    "rep": 1,
+    "gap": {
+      "reason": "用户要「每个员工本月报工总量排名」，需要两个现有工具都不具备的能力：①按员工维度聚合报工数量——production_query 的 get_operation_reports 与 get_operation_progress 均明确标注「不含员工与工价」，输出只有生产单号、工序、日期、数量，无员工字段；②跨订单+按月份汇总——所有报工/进度查询都必须传入单个订单根 order_ref，且无日期范围参数，无法覆盖「本月全部订单」。finance_query 的 get_order_payroll 是单订单人工口径，非报工量，也不能替代。生产模块与财务模块均无「员工报工汇总/排名」类 operation。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-06",
+    "rep": 2,
+    "gap": {
+      "reason": "用户需要“按员工跨订单汇总本月报工总量并排名”。production_query.get_operation_reports 的报工行不含员工字段；唯一含员工的 finance_query.get_order_payroll 必须指定单个订单（需 order_ref），明确不做员工维度汇总，且无期间/月度参数。现有工具无法提供跨订单、按员工、按月汇总的报工量排名。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-06",
+    "rep": 3,
+    "gap": {
+      "reason": "用户需要“本月每个员工报工总量的排名”，即跨订单、按员工维度的报工数量汇总排名。现有工具均不支持：production_query.get_operation_reports 只能按单张订单(order_ref)查报工记录且不含员工字段、无期间参数；finance_query.get_order_payroll 虽含员工但仅限单张订单，明确说明“不是员工维度的工资汇总”，也无月度期间筛选。缺少按员工+期间汇总报工数量的能力。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-06",
+    "rep": 1,
+    "gap": {
+      "object": "员工",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-06",
+    "rep": 2,
+    "gap": {
+      "object": "员工",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-06",
+    "rep": 3,
+    "gap": {
+      "object": "员工",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-06",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_operation_reports",
+      "missing": "group_by",
+      "missing_detail": "报工记录不含员工字段，且只能按单张订单查询，无法按员工跨订单汇总本月报工数量并排名",
+      "needed_fields": [
+        "员工",
+        "报工日期",
+        "完成数量"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-06",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-06",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_operation_reports",
+      "missing": "group_by",
+      "missing_detail": "报工记录按员工汇总并排名，且需跨所有订单按本月时间范围筛选",
+      "needed_fields": [
+        "员工",
+        "报工日期",
+        "完成数量",
+        "单位"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-07",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-07",
+    "rep": 2,
+    "gap": {
+      "reason": "用户想按供应商统计采购单延期情况（哪家供应商延期最多）。采购模块只有 list_overdue_arrivals 可列出超期未到货的采购单行，但其边界明确说明「不按供应商分组汇总」，也没有按供应商维度的延期统计/排名；采购模块本身也不支持「按供应商汇总」。因此无法给出「哪些供应商延期最多」的排名结论。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-07",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-07",
+    "rep": 1,
+    "gap": {
+      "object": "供应商",
+      "metric": "时间",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-07",
+    "rep": 2,
+    "gap": {
+      "object": "供应商",
+      "metric": "时间",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-07",
+    "rep": 3,
+    "gap": {
+      "object": "供应商",
+      "metric": "差异",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-07",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "list_overdue_arrivals",
+      "missing": "group_by",
+      "missing_detail": "超期采购单明细无法按供应商分组汇总超期单量",
+      "needed_fields": [
+        "供应商",
+        "超期天数",
+        "采购单号",
+        "状态"
+      ]
+    },
+    "domainCallsBeforeGap": 2,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-07",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-07",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "list_overdue_arrivals",
+      "missing": "group_by",
+      "missing_detail": "超期到货清单为逐行明细，无法按供应商分组汇总延期单数或超期天数排名",
+      "needed_fields": [
+        "供应商名称",
+        "超期天数",
+        "采购单号"
+      ]
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-08",
+    "rep": 1,
+    "gap": {
+      "reason": "用户需要对比本月与上月的成品出库总数量（跨订单、按月份的聚合汇总）。现有工具中 warehouse_query.get_finished_goods_outbounds 必须绑定单张订单的 order_ref，只能逐单查询出库明细，无法跨订单按月汇总；order_query.list_documents 仅支持按状态/客户/产品/更新日期筛选订单清单，不返回出库数量；finance_query 明确不支持跨订单汇总且不含出库数量。因此无工具能完成跨订单按月成品出库数量对比。"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-08",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-08",
+    "rep": 3,
+    "gap": {
+      "reason": "用户想比较「本月 vs 上月」的成品出库数量汇总。现有 warehouse_query 的成品出库查询 get_finished_goods_outbounds 必须绑定单个订单根（order_ref），只能逐单看出库行，没有按时间区间跨订单汇总成品出库数量的能力；order_query 的 list_documents 也未返回可用的订单清单（多次返回空/占位结果），因此无法按月聚合比较。"
+    },
+    "domainCallsBeforeGap": 2,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-08",
+    "rep": 1,
+    "gap": {
+      "object": "单据",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-08",
+    "rep": 2,
+    "gap": {
+      "object": "单据",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-08",
+    "rep": 3,
+    "gap": {
+      "object": "单据",
+      "metric": "数量",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-08",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_finished_goods_outbounds",
+      "missing": "time_series",
+      "missing_detail": "成品出库明细只能按单张订单查，无法按月份跨订单汇总出库数量并做月度对比",
+      "needed_fields": [
+        "发货日期",
+        "出库数量",
+        "订单号"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-08",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_finished_goods_outbounds",
+      "missing": "time_series",
+      "missing_detail": "成品出库数据只能按单张订单查询，缺少跨订单按月分组汇总的成品出库数量对比",
+      "needed_fields": [
+        "出库日期",
+        "出库数量",
+        "出库单状态"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-08",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_finished_goods_outbounds",
+      "missing": "time_series",
+      "missing_detail": "成品出库只能按单张订单查询，无法按月份区间跨订单汇总出库数量",
+      "needed_fields": [
+        "发货日期",
+        "出库数量"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-09",
+    "rep": 1,
+    "gap": {
+      "reason": "用户问的是按会计科目（管理费用）汇总的本月发生额，属于总账/科目凭证层面的数据。现有 finance_query 仅支持按单张订单查应收应付、收付款、对账、成本利润、人工，不支持科目发生额、凭证查询或跨订单/跨期汇总，其他模块也均以具体订单为根，无法回答。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-09",
+    "rep": 2,
+    "gap": {
+      "reason": "用户问\"管理费用科目本月发生额\"，需要按会计科目（管理费用）汇总的当期发生额/总账数据。现有 finance_query 仅支持单张订单维度的应收应付、收付款、对账、成本利润与人工，明确不支持跨订单汇总，也没有科目、凭证、总账余额类查询能力，其他模块亦无此数据。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-09",
+    "rep": 3,
+    "gap": {
+      "reason": "用户需要按会计科目（管理费用）+ 会计期间（本月）汇总的科目发生额。现有 finance_query 的 7 个 operation 均以单张订单为范围（应收应付、收付款、对账、单订单成本利润、人工），明确不支持跨订单汇总与科目凭证查询；其他模块也不涉及总账科目发生额。缺少“按科目/期间的科目发生额与余额查询”能力。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-09",
+    "rep": 1,
+    "gap": {
+      "object": "科目",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-09",
+    "rep": 2,
+    "gap": {
+      "object": "科目",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-09",
+    "rep": 3,
+    "gap": {
+      "object": "科目",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "区间"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-09",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_order_cost_profit",
+      "missing": "object",
+      "missing_detail": "缺少按会计科目（如管理费用）加期间的科目发生额查询，现有财务工具只支持单张订单口径，且不含月度管理费用",
+      "needed_fields": [
+        "科目编码",
+        "科目名称",
+        "期间",
+        "本期发生额",
+        "借贷方向"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-09",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_order_cost_profit",
+      "missing": "object",
+      "missing_detail": "财务模块只按订单核算应收应付、收付款、对账与单订单成本利润，没有以会计科目（管理费用）为主体的期间发生额查询",
+      "needed_fields": [
+        "科目代码",
+        "科目名称",
+        "会计期间",
+        "本期发生额"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-09",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_order_cost_profit",
+      "missing": "object",
+      "missing_detail": "缺少以会计科目（管理费用）为主体的期间发生额查询，现有财务能力均以单个订单为根，且明确不纳入月度管理费",
+      "needed_fields": [
+        "科目编码",
+        "科目名称",
+        "会计期间",
+        "期初余额",
+        "本期借方发生额",
+        "本期贷方发生额",
+        "期末余额"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-10",
+    "rep": 1,
+    "gap": {
+      "reason": "用户要「全公司各订单的毛利排名」，属于跨订单的利润汇总与排序。finance_query 的成本利润查询 get_order_cost_profit 只能针对单张订单（需 order_ref），且明确不支持跨订单汇总；也没有按毛利排序/排名的能力。现有工具无法在一次查询里返回全公司各订单毛利并排名。"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-10",
+    "rep": 2,
+    "gap": {
+      "reason": "用户要“全公司各订单的毛利排名”，属于跨订单的汇总排序。现有工具中，finance_query.get_order_cost_profit 只能按单张订单（order_ref）查询成本与利润，且明确指出不支持跨订单汇总；order_query.list_documents 虽能列出销售单，但不含金额字段，无法获取毛利数据；也没有任何工具可批量返回多订单的利润并排序。因此无法生成全公司毛利排名。"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "gap-10",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 0,
+    "catalogCalls": 2,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-10",
+    "rep": 1,
+    "gap": {
+      "object": "单据",
+      "metric": "金额",
+      "granularity": "跨单行集",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-10",
+    "rep": 2,
+    "gap": {
+      "object": "单据",
+      "metric": "金额",
+      "granularity": "跨单行集",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "gap-10",
+    "rep": 3,
+    "gap": {
+      "object": "单据",
+      "metric": "金额",
+      "granularity": "分组汇总",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 1,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-10",
+    "rep": 1,
+    "gap": {
+      "nearest_operation": "get_order_cost_profit",
+      "missing": "group_by",
+      "missing_detail": "成本利润只能按单张订单查，无法跨订单汇总并按毛利排序",
+      "needed_fields": [
+        "订单号",
+        "销售金额",
+        "总成本",
+        "利润",
+        "毛利率"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-10",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_order_cost_profit",
+      "missing": "group_by",
+      "missing_detail": "成本利润只能逐张订单查，无法跨订单汇总并按毛利排序",
+      "needed_fields": [
+        "order_ref",
+        "利润",
+        "毛利率"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "gap-10",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "get_order_cost_profit",
+      "missing": "group_by",
+      "missing_detail": "get_order_cost_profit 只能按单张订单查询成本利润，无法跨订单批量取毛利并排序排名",
+      "needed_fields": [
+        "订单号",
+        "毛利",
+        "毛利率"
+      ]
+    },
+    "domainCallsBeforeGap": 0,
+    "domainCalls": 0,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-03",
+    "rep": 1,
+    "gap": {
+      "reason": "按状态（confirmed）与更新时间区间筛选订单列表时，order_query 的 list_documents 只返回示例占位结构（如 {\"示例字段\":\"示例值\"}），search_documents 也只返回 MOCK-ORD-001 这类示例单号，无真实订单数据；因此无法列出“上个月更新过的已确认单据”，怀疑订单数据源未接入或当前为模拟数据环境。"
+    },
+    "domainCallsBeforeGap": 3,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-03",
+    "rep": 3,
+    "gap": {
+      "nearest_operation": "list_documents",
+      "missing": "time_series",
+      "missing_detail": "不支持相对时间段（如上个月）解析，且按更新日期筛选返回为空占位数据，无法列出该期间的已确认销售单",
+      "needed_fields": [
+        "单号",
+        "产品",
+        "状态",
+        "客户名",
+        "更新日期"
+      ]
+    },
+    "domainCallsBeforeGap": 2,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-04",
+    "rep": 2,
+    "gap": {
+      "reason": "用户需要查「单号中带 0001 的销售订单」。search_documents 只能做关键字模糊检索且返回结果与关键字不严格匹配（返回 MOCK-ORD-001，编号内实为 001），无法做单号精确/片段筛选，也无法区分是否为其一；list_documents 返回的是「示例字段/示例值」占位数据，无法拿到完整销售单清单做交叉核对。缺少「按单号片段精确检索或完整列举销售单」的能力。"
+    },
+    "domainCallsBeforeGap": 2,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-04",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-04",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 1,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-05",
+    "rep": 1,
+    "gap": {
+      "reason": "单据 MOCK-ORD-001 可通过 search_documents 检索到（order_ref o_1），但 get_order_overview、get_order_status、get_order_timeline 三个接口均只返回占位示例数据（{\"示例字段\":\"示例值\"}），没有真实业务字段，无法判断该订单当前所处环节。"
+    },
+    "domainCallsBeforeGap": 4,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 8,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-06",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-06",
+    "rep": 2,
+    "gap": {
+      "reason": "查询 MOCK-ORD-001（o_1）的客户时，sales_query 的 get_customer 与 get_sales_order 均只返回占位内容「示例字段: 示例值」，没有真实客户名称等字段，现有工具无法给出该订单的客户信息。"
+    },
+    "domainCallsBeforeGap": 3,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-06",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-06",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-06",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-06",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-06",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-06",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-06",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-07",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-07",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 6,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-07",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-07",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-07",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-07",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-07",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-07",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-07",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-08",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-08",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-08",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-08",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-08",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-08",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-08",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-08",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-08",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-09",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-09",
+    "rep": 2,
+    "gap": {
+      "reason": "需要订单 MOCK-ORD-001 的物料清单及用量（BOM 用料明细）。sales_query.get_bom 返回的是占位示例内容（\"示例字段\":\"示例值\"），procurement_query.get_purchase_plans 与 warehouse_query.get_raw_material_balance 同样只返回占位内容，没有任何实际物料编码、名称或数量。现有工具无法给出该订单的用料清单与需求量，缺少可用的 BOM/用料明细数据源。"
+    },
+    "domainCallsBeforeGap": 4,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-09",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-09",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-09",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-09",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-09",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-09",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-09",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-10",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-10",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "decoy-10",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-10",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-10",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "decoy-10",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-10",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-10",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "decoy-10",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-04",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-04",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-04",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "nodata-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 3,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "nodata-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "nodata-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 2,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-01",
+    "rep": 1,
+    "gap": {
+      "reason": "单号 MOCK-ORD-001 能检索到订单句柄 o_1，但对其调用 get_order_overview / get_order_status / get_order_alerts / get_order_timeline、生产单与工序进度、成品入库/出库/成品质检等接口，返回的都是占位内容（{\"示例字段\":\"示例值\"}），没有任何真实业务数据。因此无法判断未发货的具体卡点（生产未完工、质检未过、成品未入库或未安排出库等）。"
+    },
+    "domainCallsBeforeGap": 10,
+    "domainCalls": 10,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-01",
+    "rep": 2,
+    "gap": {
+      "reason": "单号 MOCK-ORD-001 能被 search_documents 检索到（order_ref=o_1），但用该 order_ref 调用 order_query（overview/alerts/timeline）、sales_query、procurement_query、production_query、warehouse_query、finance_query 的各个 operation，返回的都是占位内容 [{\"示例字段\":\"示例值\"}]，没有任何真实业务数据，无法判断未发货的具体原因。"
+    },
+    "domainCallsBeforeGap": 16,
+    "domainCalls": 16,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-01",
+    "rep": 3,
+    "gap": {
+      "reason": "MOCK-ORD-001（order_ref=o_1）在 order_query（overview/status/alerts/timeline）、sales_query、procurement_query、production_query、warehouse_query 各 operation 均只返回「{\"示例字段\":\"示例值\"}」的占位数据，没有任何真实业务字段。无法判断发货延迟的原因（缺生产进度、成品入库/出库、质检、采购到货等实际记录）。"
+    },
+    "domainCallsBeforeGap": 17,
+    "domainCalls": 17,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 10,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-01",
+    "rep": 2,
+    "gap": {
+      "object": "单据",
+      "metric": "状态",
+      "granularity": "单张明细",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 11,
+    "domainCalls": 11,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 10,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-01",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 6,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-01",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-01",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 8,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-02",
+    "rep": 1,
+    "gap": {
+      "reason": "单号 MOCK-ORD-001 能在 search_documents 中检索到（order_ref=o_1），但对该句柄执行 get_order_overview、get_order_status、get_order_timeline、get_order_alerts，以及采购计划、生产单、库存、应收等明细查询，返回的全部是占位示例数据（{\"示例字段\":\"示例值\"}），没有任何真实业务内容，无法判断该单在进度、采购到货、生产、库存或资金上的风险。"
+    },
+    "domainCallsBeforeGap": 9,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-02",
+    "rep": 2,
+    "gap": {
+      "reason": "订单 MOCK-ORD-001 已能通过 search_documents 检索到（order_ref=o_1），但对该订单的所有查询（get_order_status、get_order_timeline、get_order_alerts、get_order_overview，以及 production_query.get_production_orders、procurement_query.get_purchase_orders、warehouse_query.get_raw_material_balance、finance_query.get_receivables）均只返回 {\"示例字段\":\"示例值\"} 这类占位内容，没有任何真实业务字段。缺少可用的订单状态、交期、生产进度、采购到货、库存与应收数据，因此无法回答「这张单有什么风险」，需修复该单据的数据返回。"
+    },
+    "domainCallsBeforeGap": 9,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-02",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-02",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-02",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 12,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 8,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 13,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 18,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 6,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-03",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-03",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-03",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 8,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-04",
+    "rep": 2,
+    "gap": {
+      "reason": "单号 MOCK-ORD-001 可被 search_documents 检索到（order_ref=o_1），但对该订单的 overview/alerts/timeline 以及生产单、采购计划、原料库存余额等查询均只返回占位示例内容（“示例字段/示例值”），无真实业务数据，无法判断订单当前环节与下一步动作。需要补齐该订单的实际业务数据。"
+    },
+    "domainCallsBeforeGap": 7,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 0,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 1,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-04",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 8,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 9,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-04",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 7,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-04",
+    "rep": 2,
+    "gap": {
+      "nearest_operation": "get_order_overview",
+      "missing": "object",
+      "missing_detail": "订单总览/状态/预警接口返回占位字段，无法获得该单实际进展与待办",
+      "needed_fields": [
+        "order_ref",
+        "order_no",
+        "status",
+        "current_stage",
+        "next_step",
+        "alerts",
+        "pending_items"
+      ]
+    },
+    "domainCallsBeforeGap": 4,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-04",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 5,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-05",
+    "rep": 2,
+    "gap": {
+      "reason": "用户问 MOCK-ORD-001 与 MOCK-ORD-002 哪个更急。1) 用 search_documents 检索 \"MOCK-ORD-002\" 两次均只返回 o_1(MOCK-ORD-001)，系统中检索不到 MOCK-ORD-002；2) 对 o_1 调用 get_order_overview、get_order_alerts，以及 list_documents，返回内容均为占位数据（\"示例字段\":\"示例值\"），无法获得交期、状态、进度等可用于判定紧急程度的真实字段。现有工具无法支持\"哪张单更急\"的对比判断。"
+    },
+    "domainCallsBeforeGap": 6,
+    "domainCalls": 6,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "A",
+    "id": "unstructured-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-05",
+    "rep": 1,
+    "gap": {
+      "object": "单据",
+      "metric": "时间",
+      "granularity": "跨单行集",
+      "time_basis": "当前快照"
+    },
+    "domainCallsBeforeGap": 4,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 6,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "B",
+    "id": "unstructured-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-05",
+    "rep": 1,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-05",
+    "rep": 2,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  },
+  {
+    "group": "C",
+    "id": "unstructured-05",
+    "rep": 3,
+    "gap": null,
+    "domainCallsBeforeGap": null,
+    "domainCalls": 4,
+    "catalogCalls": 0,
+    "capped": false,
+    "answered": true
+  }
+]
