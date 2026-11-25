@@ -59,12 +59,12 @@
 
 | id | 问法 | nearest | missing |
 |---|---|---|---|
-| gap-01 | 按供应商汇总本月采购金额 | `get_purchase_orders` | `group_by` |
+| gap-01 | 按供应商汇总本月采购金额 | `get_payables` | `group_by` |
 | gap-02 | 最近六个月每月的销售订单数量趋势 | `list_documents` | `time_series` |
 | gap-03 | 各个仓库的原料库存分别是多少 | `list_low_stock_materials` | `group_by` |
 | gap-04 | 本月所有订单的应收账款总额是多少 | `get_receivables` | `group_by` |
 | gap-05 | 每个客户累计下了多少张订单 | `list_documents` | `group_by` |
-| gap-06 | 每个员工本月报工总量排名 | `get_operation_reports` | `group_by` |
+| gap-06 | 每个员工本月报工总量排名 | `get_order_payroll` | `group_by` |
 | gap-07 | 哪些供应商的采购单延期最多 | `list_overdue_arrivals` | `group_by` |
 | gap-08 | 这个月和上个月的成品出库数量对比 | `get_finished_goods_outbounds` | `time_series` |
 | gap-09 | 管理费用科目本月发生额是多少 | `get_order_cost_profit` | `object` |
