@@ -13,6 +13,7 @@ import { AGENT_LLM_PROVIDER } from "./agent-tokens";
 import { ToolExecutor } from "./tools/tool-executor";
 import { FakeLlmProvider } from "./fake-llm-provider";
 import { AgentOrchestrator } from "./agent-orchestrator";
+import { GapCandidateService, LoggingGapTicketBuilder } from "./gap-candidates";
 import { StreamTransport } from "./stream-transport";
 import { BusinessQueryAgentController } from "./business-query-agent.controller";
 import type { AgentRoleReader } from "./query-permission.guard";
@@ -100,7 +101,8 @@ export class AgentLifecycle implements OnModuleInit, OnApplicationShutdown {
         timeoutMs: Number(config.get<string>("AGENT_LLM_TIMEOUT_MS") ?? 0) || undefined,
       }),
     },
-    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, AGENT_LLM_PROVIDER, AGENT_ROLE_READER, AgentContextManager, AgentObservability, ConfigService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: AgentLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, observability: AgentObservability, config: ConfigService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined, observability }) },
+    { provide: GapCandidateService, inject: [AGENT_STATE_CLIENT], useFactory: (client: PrismaClient) => new GapCandidateService(client, new LoggingGapTicketBuilder()) },
+    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, AGENT_LLM_PROVIDER, AGENT_ROLE_READER, AgentContextManager, AgentObservability, ConfigService, GapCandidateService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: AgentLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, observability: AgentObservability, config: ConfigService, gapCandidates: GapCandidateService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined, observability, gapCandidates }) },
     { provide: StreamTransport, inject: [AgentStateManager, AGENT_ROLE_READER], useFactory: (state: AgentStateManager, roleReader: AgentRoleReader) => new StreamTransport(state, roleReader) },
     AgentLifecycle,
   ],

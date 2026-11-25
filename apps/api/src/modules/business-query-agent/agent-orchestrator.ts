@@ -13,6 +13,7 @@ import { buildSystemPrompt } from "./tools/system-prompt";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
 import { AgentContextManager } from "./context-manager";
 import type { AgentObservability } from "./observability";
+import type { GapReportInput } from "./gap-candidates";
 
 /**
  * Agent orchestrator：唯一运行入口（模块设计「Agent orchestrator」行）。
@@ -106,11 +107,12 @@ function rowCount(data: unknown): number {
   return data === null || data === undefined ? 0 : 1;
 }
 
-export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability };
+export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability; gapCandidates?: { record(input: GapReportInput): Promise<unknown> } };
 
 export class AgentOrchestrator {
   private readonly runTimeoutMs: number;
   private readonly observability?: AgentObservability;
+  private readonly gapCandidates?: AgentOrchestratorOptions["gapCandidates"];
   /** 内部错误的服务端堆栈日志（R-11）：只进服务端日志，不进 SSE 事件与对外信封。 */
   private readonly logger = new Logger("business-query-agent");
 
@@ -124,6 +126,7 @@ export class AgentOrchestrator {
   ) {
     this.runTimeoutMs = options?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     this.observability = options?.observability;
+    this.gapCandidates = options?.gapCandidates;
   }
 
   async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
@@ -467,6 +470,9 @@ export class AgentOrchestrator {
       if (!declared.has(key)) {
         declared.add(key);
         await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "gap_declared", payload: { ...result.gap } }] }).catch(() => {});
+        await this.gapCandidates?.record({ sessionId: run.sessionId, runId, gap: result.gap }).catch((error: unknown) => {
+          this.logger.warn(`run ${runId} 缺口候选记录失败：${error instanceof Error ? error.message : String(error)}`);
+        });
       }
     }
     const status = result.accepted ? "completed" : "failed";
