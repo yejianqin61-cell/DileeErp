@@ -1,6 +1,6 @@
 {
-  "reviewedBy": null,
-  "reviewedAt": null,
+  "reviewedBy": "Ye Jianqin",
+  "reviewedAt": "2026-11-25",
   "questions": [
     {"id": "gap-01", "class": "gap", "question": "按供应商汇总本月采购金额", "expect": "gap", "nearest": "get_payables", "missing": "group_by", "stub": "rows"},
     {"id": "gap-02", "class": "gap", "question": "最近六个月每月的销售订单数量趋势", "expect": "gap", "nearest": "list_documents", "missing": "time_series", "stub": "rows"},
