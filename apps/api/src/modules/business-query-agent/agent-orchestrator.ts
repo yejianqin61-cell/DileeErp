@@ -5,7 +5,9 @@ import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmToolCall,
 import type { QueryFact } from "./tools/query-fact";
 import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
-import { CATALOG_TOOL, toolRegistry } from "./tools/tool-registry";
+import { CATALOG_TOOL, GAP_TOOL, toolRegistry } from "./tools/tool-registry";
+import { checkGap, type ExecutedOperation, type GapCheckResult } from "./tools/gap-check";
+import { parseGapDeclaration } from "./tools/report-gap";
 import { describeModule } from "./tools/tool-catalog";
 import { buildSystemPrompt } from "./tools/system-prompt";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
@@ -99,6 +101,11 @@ function httpErrorMessage(error: HttpException, fallback: string): string {
   return typeof message === "string" && message.length > 0 ? message : fallback;
 }
 
+function rowCount(data: unknown): number {
+  if (Array.isArray(data)) return data.length;
+  return data === null || data === undefined ? 0 : 1;
+}
+
 export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability };
 
 export class AgentOrchestrator {
@@ -161,6 +168,8 @@ export class AgentOrchestrator {
     const searchRefs = await this.loadSessionRefs(principal.user.id, run.sessionId);
     const searchedOrderNos = new Set<string>([...searchRefs.values()]);
     const refCounter = { value: maxRefIndex(searchRefs) };
+    const executed: ExecutedOperation[] = [];
+    const declaredGaps = new Set<string>();
     let attempted = 0;
     let modelSteps = 0;
     let recoverableFailures = 0;
@@ -197,6 +206,11 @@ export class AgentOrchestrator {
             }
             continue;
           }
+          if (call.tool === GAP_TOOL) {
+            const checked = await this.declareGap(run, principal, call, executed, declaredGaps);
+            messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify(checked.accepted ? { result: "已记录" } : { error: { code: checked.code, message: checked.message } }) });
+            continue;
+          }
           await this.appendToolArgs(runId, call);
           const resolved = this.resolveRootCall(call, searchRefs, searchedOrderNos);
           const outcome = resolved.error
@@ -204,6 +218,7 @@ export class AgentOrchestrator {
             : await this.executeTool(runId, principal, resolved.call ?? call, signal);
           if (outcome.ok) {
             facts.push(outcome.fact);
+            executed.push({ operation: call.operation, rows: rowCount(outcome.fact.data) });
             const issued = this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
             if (issued.length > 0) await this.persistRefs(runId, issued);
             if (SEARCH_OPERATIONS.has(call.operation)) {
@@ -236,7 +251,7 @@ export class AgentOrchestrator {
 
     // 空结果也要说清楚（R-6）：一句「查不到」对用户没有信息量，检索词与 0 条才有。
     // 注意判据是「有没有数据行」，不是「有没有事实」——检索成功但 0 行同样会留下一条事实。
-    const hasRows = facts.some((fact) => (Array.isArray(fact.data) ? fact.data.length > 0 : fact.data !== null && fact.data !== undefined));
+    const hasRows = facts.some((fact) => rowCount(fact.data) > 0);
     if (!hasRows && searchQueries.length > 0) {
       messages.push({ role: "system", content: `本轮用「${searchQueries.join("」「")}」检索，命中 0 条。回答必须写明检索词与 0 条结果，并提示用户核对单号；不得编造业务结论。` });
     }
@@ -433,6 +448,32 @@ export class AgentOrchestrator {
       this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: Date.now() - startedAt, error_code: code });
       return { ok: false, code, message };
     }
+  }
+
+  private async declareGap(run: AgentRunRow, principal: AgentPrincipal, call: AgentLlmToolCall, executed: readonly ExecutedOperation[], declared: Set<string>): Promise<GapCheckResult> {
+    const runId = run.id;
+    await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } }] });
+    const startedAt = Date.now();
+    let result: GapCheckResult;
+    try {
+      result = checkGap(parseGapDeclaration(call.args, run.question), { accessLevel: run.accessLevel as AgentAccessLevel, executed });
+    } catch (error) {
+      const code = httpErrorCode(error);
+      if (!(error instanceof HttpException) || !code) throw error;
+      result = { accepted: false, code, message: httpErrorMessage(error, "缺口声明失败") };
+    }
+    if (result.accepted) {
+      const key = `${result.gap.nearest_operation}:${result.gap.missing}`;
+      if (!declared.has(key)) {
+        declared.add(key);
+        await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "gap_declared", payload: { ...result.gap } }] }).catch(() => {});
+      }
+    }
+    const status = result.accepted ? "completed" : "failed";
+    const errorCode = result.accepted ? undefined : result.code;
+    await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status, ...(errorCode ? { code: errorCode } : {}) } }] });
+    this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status, result_rows: 0, duration_ms: Date.now() - startedAt, ...(errorCode ? { error_code: errorCode } : {}) });
+    return result;
   }
 
   private async executeTool(runId: string, principal: AgentPrincipal, call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {

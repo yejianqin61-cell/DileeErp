@@ -20,7 +20,7 @@ const TERMINAL_EVENT_TYPES = new Set(["completed", "error", "cancelled"]);
  * 内部事件：只落库供取证，**不重放、不推送**。`tool_args` 记的是模型实际传入的单号与检索词，
  * 属于业务值，浏览器拿不到（R-11 脱敏），但排查口径问题时服务端必须看得到。
  */
-const INTERNAL_EVENT_TYPES = new Set(["tool_args", "order_ref"]);
+const INTERNAL_EVENT_TYPES = new Set(["tool_args", "order_ref", "gap_declared"]);
 
 export class StreamTransport {
   constructor(private readonly state: AgentStateManager, private readonly roleReader: AgentRoleReader) {}
