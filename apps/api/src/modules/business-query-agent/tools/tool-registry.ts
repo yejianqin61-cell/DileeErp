@@ -14,7 +14,9 @@ export const AGENT_TOOLS = ["order_query", "sales_query", "procurement_query", "
 export type AgentToolName = (typeof AGENT_TOOLS)[number];
 export const CATALOG_TOOL = "catalog_query";
 export const DESCRIBE_MODULE_OPERATION = "describe_module";
-export type AgentCallableToolName = AgentToolName | typeof CATALOG_TOOL;
+export const GAP_TOOL = "report_gap";
+export const DECLARE_GAP_OPERATION = "declare_gap";
+export type AgentCallableToolName = AgentToolName | typeof CATALOG_TOOL | typeof GAP_TOOL;
 
 export type ToolCapability = {
   tool: AgentToolName;
