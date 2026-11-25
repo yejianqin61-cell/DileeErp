@@ -17,7 +17,7 @@ import { AGENT_TOOLS, CATALOG_TOOL, DESCRIBE_MODULE_OPERATION, TOOL_CAPABILITIES
 
 export type DeepSeekProviderConfig = { apiKey: string; baseURL?: string; model?: string; timeoutMs?: number };
 
-const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
+export const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
   order_query: "先调用 search_documents 按单号或关键字检索（销售单号、采购单号、生产单号都可以）。根查询用检索结果里的 order_ref 句柄，不要复制单号原文。可查询该订单的非财务进展。没有具体单号、只是问「最近有哪些单」「已确认的有哪些」时，用 list_documents 按状态/客户/产品/日期筛选。",
   sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_ref 取本轮 search_documents 的结果。",
   procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_ref 取本轮 search_documents 的结果。问「哪些采购到货超期」这类不针对某张单的问题，用 list_overdue_arrivals，它不需要 order_ref。",
@@ -27,7 +27,7 @@ const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
 };
 
 /** 每个领域工具只公布其在注册表中登记的 operation，执行器仍会二次校验。 */
-function domainInputSchema(tool: AgentToolName) {
+export function domainInputSchema(tool: AgentToolName) {
   const operations = TOOL_CAPABILITIES.filter((capability) => capability.tool === tool).map((capability) => capability.operation);
   return jsonSchema<{ operation: string; order_ref?: string; order_no?: string; q?: string; page?: number; status?: string; customer_q?: string; product_q?: string; from?: string; to?: string }>({
     type: "object",
@@ -48,9 +48,9 @@ function domainInputSchema(tool: AgentToolName) {
   });
 }
 
-const CATALOG_TOOL_DESCRIPTION = "展开某个查询模块里各 operation 的适用问法、输入要求、输出与不覆盖的边界。不确定该用哪个 operation 时先展开对应模块；不查业务数据。";
+export const CATALOG_TOOL_DESCRIPTION = "展开某个查询模块里各 operation 的适用问法、输入要求、输出与不覆盖的边界。不确定该用哪个 operation 时先展开对应模块；不查业务数据。";
 
-function catalogInputSchema(tools: readonly AgentToolName[]) {
+export function catalogInputSchema(tools: readonly AgentToolName[]) {
   return jsonSchema<{ operation: string; module: string }>({
     type: "object",
     properties: {
