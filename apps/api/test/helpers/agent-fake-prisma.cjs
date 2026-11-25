@@ -8,8 +8,28 @@ function createPrisma() {
     if (expected && typeof expected === "object" && expected.gt !== undefined) return value > expected.gt;
     return value === expected;
   });
+  store.gapCandidates = [];
+  store.gapReports = [];
+  const table = (rows, uniqueKeys, defaults) => ({
+    findFirst: async ({ where = {} } = {}) => rows.find((row) => matches(row, where)) ?? null,
+    findMany: async ({ where = {}, orderBy } = {}) => { const found = rows.filter((row) => matches(row, where)); if (orderBy?.createdAt === "asc") found.sort((a, b) => a.createdAt - b.createdAt); return found; },
+    createMany: async ({ data, skipDuplicates }) => {
+      let count = 0;
+      for (const item of data) {
+        const duplicate = rows.some((row) => uniqueKeys.every((key) => row[key] === item[key]));
+        if (duplicate && !skipDuplicates) throw new Error("unique violation");
+        if (duplicate) continue;
+        rows.push({ id: randomUUID(), ...defaults(), ...item, createdAt: new Date() });
+        count += 1;
+      }
+      return { count };
+    },
+    updateMany: async ({ where = {}, data }) => { const matched = rows.filter((row) => matches(row, where)); for (const row of matched) Object.assign(row, data); return { count: matched.length }; },
+  });
   const db = {
     store,
+    agentGapCandidate: table(store.gapCandidates, ["nearestOperation", "missing"], () => ({ status: "accumulating", dispatchedAt: null })),
+    agentGapReport: table(store.gapReports, ["candidateId", "runId"], () => ({})),
     agentSession: {
       create: async ({ data }) => { const row = { id: randomUUID(), ...data, createdAt: new Date(), updatedAt: new Date() }; store.sessions.push(row); return row; },
       findMany: async ({ where = {} } = {}) => store.sessions.filter((row) => matches(row, where)),
