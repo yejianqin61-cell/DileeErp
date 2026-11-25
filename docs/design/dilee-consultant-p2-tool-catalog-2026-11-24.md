@@ -1,6 +1,6 @@
 # 迪礼顾问 P2：工具目录、缺口判定与前端换装
 
-日期：2026-11-24｜版本：1.2｜状态：**施工中，阶段 1、2 已完成**｜类型：设计文档
+日期：2026-11-24｜版本：1.3｜状态：**施工中，阶段 1、2 已完成**｜类型：设计文档
 
 上游：[迪礼顾问大治理](dilee-consultant-governance-2026-11-22.md) §6.2、§7、§9。
 计划：[P2 施工计划](../task/2026-11-24-agent-p2-plan/plan.md)。
@@ -61,12 +61,15 @@ report_gap {
   nearest_operation: "list_low_stock_materials",
   missing: "group_by" | "filter" | "metric" | "time_series" | "object",
   missing_detail: "按仓库分组",
+  missing_param?: "q" | "status" | "customer_q" | "product_q" | "from" | "to",
   needed_fields?: ["<Prisma 模型>.<字段>", ...]
 }
 ```
 
 - `missing` 是封闭枚举，取值穷举如上；`object` 表示「现有工具都不以这个对象为主体」。
 - `missing_detail` 是短语，不是用户原话 —— 与 prompt-builder 的既有纪律一致。
+- `missing_param` 可选，只在缺某个筛选参数时填；取值是各条目 `accepts` 的并集去掉 `order_ref` 与 `page`。
+  没有它，第 2 条核对无从比对。这个字段没有经过实验。
 - `needed_fields` 可选，只作线索。工具描述里写明格式 `<Prisma 模型>.<字段>` 并给一个例子；
   对不上 schema 的项不导致驳回（§2.3 第 3 条）。
 
@@ -77,11 +80,11 @@ report_gap {
 | # | 核对 | 真源 | 不过时 |
 |---|---|---|---|
 | 1 | `nearest_operation` 存在且当前档位可见 | `TOOL_CAPABILITIES` | 回可用 operation 列表 |
-| 2 | `missing` 声称缺的参数，该 operation 其实接受 | L2 条目的机器可读参数清单（§3.1 `accepts`） | 回该条目原文，让模型改用它 |
+| 2 | 填了 `missing_param`，而该 operation 其实接受它 | L2 条目的机器可读参数清单（§3.1 `accepts`） | 回该条目原文，让模型改用它 |
 | 3 | `needed_fields` 逐项是否存在 | Prisma DMMF | **不驳回**；存在的留在 `needed_fields`，其余移到 `unverified_fields` |
-| 4 | 本轮已调过工具且拿到 0 行 | 本轮 tool 结果 | 判为缺数据，不进缺口路径 |
+| 4 | 最近邻本轮成功执行过且每次都是 0 行 | 本轮 tool 结果 | 判为缺数据，不进缺口路径 |
 
-第 4 条是规则，不交给模型判断：「试了一次 0 行」永远不算缺工具。
+第 4 条是规则，不交给模型判断：最近邻查到 0 行不算缺工具。只看最近邻，别的检索落空不挡住之后的缺口。
 
 第 3 条不驳回有两个原因：目录从不向模型展示 Prisma 模型名，它只能猜；实验里 C 组填了 115 个字段名，
 符合 `模型.字段` 格式的是 0 个（§2.8）。字段到底有没有，由开工前的探针对着真实 schema 判（§2.5）。
@@ -365,3 +368,5 @@ chat-demo 的会话只活在浏览器 IndexedDB，换设备即丢、服务端无
   新代码即刻执行注释政策。用户同意。
 - 2026-11-25 v1.2：记入实验结果（§2.8）。归并键由「最近邻 + 差异类型 + 归一化短语」改为
   「最近邻 + 差异类型」；`needed_fields` 核对由驳回改为标注。用户同意先改设计。
+- 2026-11-25 v1.3：用户拍板两处。`report_gap` 加可选 `missing_param`，核对 2 仅在填了它时触发；
+  核对 4 只看最近邻本轮的执行结果。
