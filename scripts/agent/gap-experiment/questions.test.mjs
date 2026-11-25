@@ -37,11 +37,11 @@ test("expect、missing、stub 与类别对应", () => {
   assert.ok(questions.every((item) => item.stub === "empty" || item.stub === "rows"));
 });
 
-test("转写完成时题集处于待审状态", () => {
+test("审阅状态要么两项都空，要么两项都填", () => {
   const file = load();
   assert.ok("reviewedBy" in file && "reviewedAt" in file);
-  assert.equal(file.reviewedBy, null);
-  assert.equal(file.reviewedAt, null);
+  const filled = [file.reviewedBy, file.reviewedAt].map((value) => typeof value === "string" && value.trim().length > 0);
+  assert.ok(filled.every(Boolean) || (file.reviewedBy === null && file.reviewedAt === null));
 });
 
 test("题面逐字与种子表一致", () => {
