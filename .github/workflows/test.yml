@@ -98,6 +98,7 @@ jobs:
         run: |
           mkdir -p apps/web/.next/standalone/apps/web/.next
           cp -r apps/web/.next/static apps/web/.next/standalone/apps/web/.next/
+          cp -r apps/web/public apps/web/.next/standalone/apps/web/
           PORT=3000 node apps/web/.next/standalone/apps/web/server.js > web.log 2>&1 &
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3000/login > /dev/null; then echo "Web healthy"; exit 0; fi
