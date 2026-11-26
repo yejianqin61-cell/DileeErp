@@ -2,6 +2,7 @@
 
 import { Fragment, useMemo, type ReactNode } from "react";
 import type { List, ListItem, Nodes, PhrasingContent, RootContent, Table } from "mdast";
+import { CodeBlock } from "../../features/agent-chat/markdown/code-block";
 import { InlineMath, MathBlock } from "../../features/agent-chat/markdown/math";
 import { toMdAst } from "../../features/agent-chat/markdown/parse";
 import { useThrottledText } from "../../features/agent-chat/markdown/use-throttled-text";
@@ -39,12 +40,7 @@ function renderBlock(block: RootContent, caret: boolean): ReactNode {
     case "math":
       return <MathBlock value={block.value} />;
     case "code":
-      return (
-        <div className="agent-md-code">
-          <div className="agent-md-code-head"><span>{block.lang || "代码"}</span></div>
-          <pre className="agent-md-pre"><code>{block.value}</code></pre>
-        </div>
-      );
+      return <CodeBlock code={block.value} language={block.lang ?? ""} />;
     case "list":
       return renderList(block, caret);
     case "table":
