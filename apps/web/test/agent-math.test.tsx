@@ -32,9 +32,7 @@ describe("AgentMarkdown 公式", () => {
     await waitFor(() => expect(view.container.querySelector(".katex")).not.toBeNull(), loaded);
     const first = view.container.querySelector(".katex");
 
-    view.rerender(<AgentMarkdown text={"$$E=mc^2$$
-
-补充说明"} />);
+    view.rerender(<AgentMarkdown text={"$$E=mc^2$$\n\n补充说明"} />);
 
     expect(view.container.querySelector(".katex")).toBe(first);
   });
