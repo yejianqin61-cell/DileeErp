@@ -19,10 +19,10 @@ test("部分唯一索引 WHERE 的活动状态清单与 AGENT_ACTIVE_STATES 逐�
   assert.deepEqual([...AGENT_ACTIVE_STATES].sort(), ["planning", "querying", "responding"]);
 });
 
-test("终态集合固定为 completed/failed/cancelled，SSE 事件 8 种 + 两个内部事件", () => {
+test("终态集合固定为 completed/failed/cancelled，SSE 事件 8 种 + 三个内部事件", () => {
   assert.deepEqual([...AGENT_TERMINAL_STATES].sort(), ["cancelled", "completed", "failed"]);
   // tool_args 与 order_ref 只落库：一个供取证，一个记已发出的句柄（跨轮解析要用），都不重放、不推送。
-  assert.deepEqual([...AGENT_EVENT_TYPES].sort(), ["answer_delta", "cancelled", "completed", "error", "order_ref", "source", "state", "tool_args", "tool_status", "usage"].sort());
+  assert.deepEqual([...AGENT_EVENT_TYPES].sort(), ["answer_delta", "cancelled", "completed", "error", "gap_declared", "order_ref", "source", "state", "tool_args", "tool_status", "usage"].sort());
 });
 
 test("activity run 索引只覆盖 agent_runs（不会误伤事件表）", () => {

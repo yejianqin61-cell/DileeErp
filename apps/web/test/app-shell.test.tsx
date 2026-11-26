@@ -18,6 +18,8 @@ import { AppShell } from "../components/layout/app-shell";
 // next/navigation 的桩：pathname 由用例控制（vi.hoisted 避免 mock 工厂的 TDZ）。
 const route = vi.hoisted(() => ({ pathname: "/" }));
 vi.mock("next/navigation", () => ({ usePathname: () => route.pathname }));
+const cacheStore = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), delete: vi.fn(), clear: vi.fn(), keys: vi.fn() }));
+vi.mock("../lib/agent-cache-idb", () => ({ openAgentCacheStore: () => cacheStore }));
 
 /** 与 app-shell.tsx 的导航表一致（文案 / href / 生成的 testid）。账号中心固定排在最后。 */
 const NAV_ITEMS = [
@@ -288,19 +290,39 @@ describe("AppShell · 鉴权通过后的导航与主区渲染", () => {
 
   // 迪礼顾问是唯一「工作区自己滚」的页面：内容区要被标成固定高度，
   // 否则整页滚动会带着左侧导航一起动（用户明确要求：长对话只滚消息区）。
-  it("只有 /business-query 把主区标成固定高度布局（data-layout=fixed）", async () => {
-    route.pathname = "/business-query";
+  it("只有 /agent 把主区标成固定高度布局（data-layout=fixed）", async () => {
+    route.pathname = "/agent";
     stubApi(() => me({ surface_sections: [...FULL_SECTIONS, "business-query"] }));
 
     const { rerender } = renderShell(<div data-testid="page-content">对话工作区</div>);
 
     expect(await screen.findByTestId("app-main")).toHaveAttribute("data-layout", "fixed");
     expect(screen.getByTestId("page-content")).toBeVisible();
+    expect(screen.getByTestId("nav-link-agent")).toHaveAttribute("href", "/agent");
 
     route.pathname = "/production";
     rerender(<AppShell><div data-testid="page-content">生产看板</div></AppShell>);
 
     await waitFor(() => expect(screen.getByTestId("app-main")).not.toHaveAttribute("data-layout"));
+  });
+});
+
+describe("AppShell · 退出登录", () => {
+  it.each([
+    ["清除成功", () => Promise.resolve(["session:u", "drafts:u:new", "branches:u:s"]), 2],
+    ["清除失败", () => Promise.reject(new Error("存储不可用")), 0],
+  ])("先清顾问本地问答与草稿、保留分支关系，再请求退出（%s）", async (_label, outcome, deleted) => {
+    stubLocation();
+    cacheStore.keys.mockImplementation(outcome);
+    cacheStore.delete.mockResolvedValue(undefined);
+    const calls = stubApi((url) => (url.endsWith("/auth/logout") ? apiNoContent() : me()));
+    renderShell();
+
+    await userEvent.click(await screen.findByTestId("logout-button"));
+
+    await waitFor(() => expect(callsTo(calls, "/auth/logout")).toHaveLength(1));
+    expect(cacheStore.delete).toHaveBeenCalledTimes(deleted);
+    expect(cacheStore.delete).not.toHaveBeenCalledWith("branches:u:s");
   });
 });
 

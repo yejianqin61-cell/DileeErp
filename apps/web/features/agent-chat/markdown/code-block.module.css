@@ -1,0 +1,85 @@
+.code :global(.token.comment),
+.code :global(.token.prolog),
+.code :global(.token.cdata) {
+  color: #64748b;
+}
+
+.code :global(.token.punctuation) {
+  color: #475569;
+}
+
+.code :global(.token.keyword),
+.code :global(.token.atrule),
+.code :global(.token.operator) {
+  color: #7c3aed;
+}
+
+.code :global(.token.string),
+.code :global(.token.attr-value),
+.code :global(.token.inserted) {
+  color: #15803d;
+}
+
+.code :global(.token.number),
+.code :global(.token.boolean),
+.code :global(.token.constant),
+.code :global(.token.attr-name) {
+  color: #b45309;
+}
+
+.code :global(.token.function),
+.code :global(.token.class-name),
+.code :global(.token.property),
+.code :global(.token.variable) {
+  color: #1d4ed8;
+}
+
+.code :global(.token.tag),
+.code :global(.token.selector),
+.code :global(.token.deleted),
+.code :global(.token.important) {
+  color: #b91c1c;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.comment),
+:global([data-agent-theme="dark"]) .code :global(.token.prolog),
+:global([data-agent-theme="dark"]) .code :global(.token.cdata) {
+  color: #8da1b9;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.punctuation) {
+  color: #c3ccdc;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.keyword),
+:global([data-agent-theme="dark"]) .code :global(.token.atrule),
+:global([data-agent-theme="dark"]) .code :global(.token.operator) {
+  color: #c4a7ff;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.string),
+:global([data-agent-theme="dark"]) .code :global(.token.attr-value),
+:global([data-agent-theme="dark"]) .code :global(.token.inserted) {
+  color: #91d076;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.number),
+:global([data-agent-theme="dark"]) .code :global(.token.boolean),
+:global([data-agent-theme="dark"]) .code :global(.token.constant),
+:global([data-agent-theme="dark"]) .code :global(.token.attr-name) {
+  color: #e6c47a;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.function),
+:global([data-agent-theme="dark"]) .code :global(.token.class-name),
+:global([data-agent-theme="dark"]) .code :global(.token.property),
+:global([data-agent-theme="dark"]) .code :global(.token.variable) {
+  color: #7fc4f0;
+}
+
+:global([data-agent-theme="dark"]) .code :global(.token.tag),
+:global([data-agent-theme="dark"]) .code :global(.token.selector),
+:global([data-agent-theme="dark"]) .code :global(.token.deleted),
+:global([data-agent-theme="dark"]) .code :global(.token.important) {
+  color: #ff9d96;
+}

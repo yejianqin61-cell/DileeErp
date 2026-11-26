@@ -18,10 +18,14 @@ export const AGENT_TOOL_LABELS: Record<string, string> = {
   production_query: "生产",
   warehouse_query: "库存",
   finance_query: "财务",
+  catalog_query: "工具目录",
+  report_gap: "缺口声明",
 };
 
 /** 35 个内部 operation → 业务对象（用户看得懂的词）。 */
 export const AGENT_OPERATION_LABELS: Record<string, string> = {
+  describe_module: "查看工具说明",
+  declare_gap: "登记缺口",
   // order_query
   search_documents: "单号检索",
   search_orders: "销售订单",
@@ -128,6 +132,10 @@ const TOOL_ERROR_REASONS: Record<string, string> = {
   AGENT_MODEL_UNAVAILABLE: "模型服务暂时不可用",
   AGENT_MODEL_AUTH: "模型服务配置异常",
   AGENT_MODEL_ERROR: "模型服务返回异常",
+  AGENT_GAP_ARGUMENT_INVALID: "缺口声明格式不对",
+  AGENT_GAP_OPERATION_UNKNOWN: "最近的工具名不存在",
+  AGENT_GAP_PARAM_SUPPORTED: "现有工具支持这个条件",
+  AGENT_GAP_NO_DATA: "查到 0 行，缺的是数据",
 };
 
 export function toolErrorReason(code: string | undefined): string {

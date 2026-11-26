@@ -1,0 +1,27 @@
+.message {
+  display: grid;
+  width: 100%;
+  justify-items: end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.versions {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.editor {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+}

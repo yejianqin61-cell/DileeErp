@@ -207,6 +207,7 @@ export function mergeOutcomes(parts) {
     toolCalls: parts.reduce((sum, part) => sum + part.toolCalls, 0),
     answerChunks: parts.reduce((sum, part) => sum + part.answerChunks, 0),
     modelSteps: parts.reduce((sum, part) => sum + (part.modelSteps ?? 0), 0),
+    runIds: parts.map((part) => part.runId),
   };
 }
 

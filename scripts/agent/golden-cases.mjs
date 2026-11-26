@@ -1,7 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const GROUPS = ["entry", "miss", "relation", "followup", "permission", "finance_positive", "known_answer"];
+export const GROUPS = ["entry", "miss", "relation", "followup", "permission", "finance_positive", "known_answer", "gap"];
+
+export const GAP_CLASSES = ["gap", "permission", "decoy"];
 
 export const FULL_ACCOUNT_GROUPS = ["finance_positive"];
 
@@ -86,9 +88,21 @@ function parseBaselineDocs(raw) {
   return raw.map((item, index) => requireString(item, `baselineDocs[${index}]`));
 }
 
+function parseGap(raw, id, group) {
+  if (group !== "gap") {
+    if (raw !== undefined) fail(`用例 ${id} 不是 gap 组，不能带 gap 字段`);
+    return undefined;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) fail(`用例 ${id} 属于 gap 组，必须给 gap 字段`);
+  const unknown = Object.keys(raw).filter((key) => key !== "class" && key !== "nearest");
+  if (unknown.length > 0) fail(`用例 ${id} 的 gap 不接受字段：${unknown.join(", ")}`);
+  if (!GAP_CLASSES.includes(raw.class)) fail(`用例 ${id} 的 gap.class 必须是 ${GAP_CLASSES.join(" / ")}`);
+  return { class: raw.class, nearest: requireString(raw.nearest, `用例 ${id} 的 gap.nearest`) };
+}
+
 export function parseCase(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) fail("用例必须是 JSON 对象");
-  const allowed = ["id", "group", "question", "turns", "baselineDocs", "expect"];
+  const allowed = ["id", "group", "question", "turns", "baselineDocs", "expect", "gap"];
   const unknown = Object.keys(raw).filter((key) => !allowed.includes(key));
   if (unknown.length > 0) fail(`用例不接受字段：${unknown.join(", ")}（允许：${allowed.join(", ")}）`);
 
@@ -105,7 +119,8 @@ export function parseCase(raw) {
   if (hasQuestion && hasTurns) fail(`用例 ${id} 不能同时给 question 与 turns`);
   if (!hasQuestion && !hasTurns) fail(`用例 ${id} 必须给 question 或 turns`);
 
-  const parsed = { id, group, baselineDocs: parseBaselineDocs(raw.baselineDocs), expect: parseExpect(raw.expect) };
+  const gap = parseGap(raw.gap, id, group);
+  const parsed = { id, group, baselineDocs: parseBaselineDocs(raw.baselineDocs), expect: parseExpect(raw.expect), ...(gap ? { gap } : {}) };
   if (hasQuestion) {
     parsed.question = requireString(raw.question, "question");
     return parsed;

@@ -47,7 +47,7 @@ test("plan：输入 schema 提供 order_ref 句柄，order_no 保留为兼容", 
     doGenerate: { content: [], finishReason: FINISH_STOP, usage: USAGE },
   });
   await makeProvider(model).plan([{ role: "user", content: "查询订单采购进度" }], ["order_query", "procurement_query"], SIGNAL);
-  const tools = model.doGenerateCalls[0].tools;
+  const tools = model.doGenerateCalls[0].tools.filter((tool) => tool.name !== "catalog_query" && tool.name !== "report_gap");
   for (const tool of tools) {
     assert.ok(tool.inputSchema.properties.order_ref, `${tool.name} 必须提供 order_ref`);
     assert.match(tool.inputSchema.properties.order_ref.description, /句柄/, "order_ref 的说明必须讲清它是检索返回的句柄");
@@ -161,7 +161,7 @@ test("streamAnswer：传入 tools 时强制 toolChoice none，最终回答不能
   const chunks = [];
   for await (const chunk of makeProvider(model).streamAnswer([{ role: "user", content: "q" }], SIGNAL, ["order_query", "production_query"])) chunks.push(chunk);
   const call = model.doStreamCalls[0];
-  assert.equal(call.tools.length, 2, "必须声明工具，DeepSeek 才会进入受控的工具模式");
+  assert.deepEqual(call.tools.map((tool) => tool.name), ["order_query", "production_query", "report_gap", "catalog_query"], "必须声明工具（含目录工具），DeepSeek 才会进入受控的工具模式");
   assert.equal(call.toolChoice?.type, "none", "最终回答必须 toolChoice=none，否则模型会输出原始 DSML 工具调用标记");
   assert.equal(chunks.filter((chunk) => chunk.type === "text").length, 1);
 });

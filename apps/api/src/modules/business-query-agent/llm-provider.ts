@@ -1,4 +1,4 @@
-import type { AgentToolName } from "./tools/tool-registry";
+import type { AgentCallableToolName, AgentToolName } from "./tools/tool-registry";
 
 /**
  * LLM provider 的最小接口（模块设计「每个模块的 Interface」LLM provider 行）。
@@ -16,10 +16,10 @@ export type AgentLlmMessage =
    * （AI SDK v7 的 @ai-sdk/deepseek 会把 input 对象序列化成 arguments，不能再手工 JSON.stringify）、
    * content 是 QueryFact JSON 或工具失败信封 `{error:{code,message}}`。
    */
-  | { role: "tool"; id: string; tool: AgentToolName; operation: string; args: Record<string, unknown>; content: string };
+  | { role: "tool"; id: string; tool: AgentCallableToolName; operation: string; args: Record<string, unknown>; content: string };
 
 /** 模型请求的一次工具调用。`id` 是工具结果往返的关联键（DeepSeek 的 toolCallId）。 */
-export type AgentLlmToolCall = { id: string; tool: AgentToolName; operation: string; args: Record<string, unknown> };
+export type AgentLlmToolCall = { id: string; tool: AgentCallableToolName; operation: string; args: Record<string, unknown> };
 
 export type AgentLlmPlan = { toolCalls: AgentLlmToolCall[] };
 

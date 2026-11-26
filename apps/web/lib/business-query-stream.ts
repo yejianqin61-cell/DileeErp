@@ -76,7 +76,7 @@ export async function followRunStream(options: FollowRunOptions): Promise<void> 
     } catch (error) {
       if (options.signal.aborted) return;
       const message = String((error as Error)?.message ?? error);
-      if (message.startsWith("SSE_REFUSED_")) throw new Error(message === "SSE_REFUSED_401" ? "登录状态已失效，请重新登录" : "当前档位无法读取该回答");
+      if (message.startsWith("SSE_REFUSED_")) throw Object.assign(new Error(message === "SSE_REFUSED_401" ? "登录状态已失效，请重新登录" : "当前档位无法读取该回答"), { refused: true });
     }
     if (sawTerminal) return;
 

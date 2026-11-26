@@ -1,0 +1,62 @@
+.root[data-agent-theme="dark"] {
+  --background: #0f1420;
+  --surface: #171e2c;
+  --surface-muted: #1f2839;
+  --border: #2d384d;
+  --text: #e6ebf4;
+  --text-muted: #9aa7bd;
+  --primary: #4fb3d1;
+  --primary-foreground: #0f1420;
+  --success: #4cc79a;
+  --danger: #ff8a80;
+  --info: #7fa8f0;
+  --focus-ring: #56a8bf;
+  color: var(--text);
+  color-scheme: dark;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-toolbar-mark),
+.root[data-agent-theme="dark"] :global(.agent-empty-mark),
+.root[data-agent-theme="dark"] :global(.agent-avatar),
+.root[data-agent-theme="dark"] :global(.agent-bubble-user) {
+  background: #1f3a47;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-suggestion:hover),
+.root[data-agent-theme="dark"] :global(.agent-history-item[aria-current="true"]) {
+  background: #1b3440;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-tool-safe),
+.root[data-agent-theme="dark"] :global(.agent-input::placeholder) {
+  color: var(--text-muted);
+}
+
+.root[data-agent-theme="dark"] :global(.agent-notice) {
+  border-color: #6b2f2a;
+  background: #3a1d1b;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-input-box[data-busy="true"]) {
+  background: var(--surface);
+}
+
+.root[data-agent-theme="dark"] :global(.agent-send) {
+  color: #0f1420;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-send:hover:not(:disabled)) {
+  background: #6cc4de;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-send:disabled) {
+  background: #33505c;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-md-code) {
+  background: #111827;
+}
+
+.root[data-agent-theme="dark"] :global(.agent-md-code-inline) {
+  background: #243049;
+}

@@ -69,3 +69,14 @@ test("失败原因翻成人话；认不出的错误码不把内部细节甩给�
   assert.equal(toolErrorReason("SOME_INTERNAL_STACK_CODE"), "查询没有完成");
   assert.equal(toolErrorReason("AGENT_INTERNAL_ERROR").includes("AGENT"), false);
 });
+
+test("目录工具有中文标签：catalog_query/describe_module", () => {
+  assert.equal(toolOperationLabel("catalog_query", "describe_module"), "查看工具说明");
+  assert.equal(AGENT_TOOL_LABELS.catalog_query, "工具目录");
+});
+
+test("缺口声明有中文标签与四个失败原因", () => {
+  assert.equal(AGENT_TOOL_LABELS.report_gap, "缺口声明");
+  assert.equal(toolOperationLabel("report_gap", "declare_gap"), "登记缺口");
+  assert.deepEqual(["AGENT_GAP_ARGUMENT_INVALID", "AGENT_GAP_OPERATION_UNKNOWN", "AGENT_GAP_PARAM_SUPPORTED", "AGENT_GAP_NO_DATA"].map(toolErrorReason), ["缺口声明格式不对", "最近的工具名不存在", "现有工具支持这个条件", "查到 0 行，缺的是数据"]);
+});

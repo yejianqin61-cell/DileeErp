@@ -1,0 +1,81 @@
+{
+  "A": {
+    "recall": {
+      "count": 24,
+      "total": 30
+    },
+    "decoyFp": {
+      "count": 5,
+      "total": 30
+    },
+    "nodataFp": {
+      "count": 0,
+      "total": 15
+    },
+    "unstructuredGapRate": {
+      "count": 7,
+      "total": 15
+    },
+    "callsBeforeGap": 0.5833333333333334,
+    "consistency": {
+      "count": 17,
+      "total": 30
+    },
+    "nearestAgree": null,
+    "errors": 0
+  },
+  "B": {
+    "recall": {
+      "count": 29,
+      "total": 30
+    },
+    "decoyFp": {
+      "count": 0,
+      "total": 30
+    },
+    "nodataFp": {
+      "count": 0,
+      "total": 15
+    },
+    "unstructuredGapRate": {
+      "count": 2,
+      "total": 15
+    },
+    "callsBeforeGap": 0.1724137931034483,
+    "consistency": {
+      "count": 27,
+      "total": 30
+    },
+    "nearestAgree": null,
+    "errors": 0
+  },
+  "C": {
+    "recall": {
+      "count": 28,
+      "total": 30
+    },
+    "decoyFp": {
+      "count": 1,
+      "total": 30
+    },
+    "nodataFp": {
+      "count": 0,
+      "total": 15
+    },
+    "unstructuredGapRate": {
+      "count": 1,
+      "total": 15
+    },
+    "callsBeforeGap": 0.25,
+    "consistency": {
+      "count": 26,
+      "total": 30
+    },
+    "nearestAgree": {
+      "count": 23,
+      "total": 30
+    },
+    "errors": 0
+  },
+  "decision": "adopt_C"
+}

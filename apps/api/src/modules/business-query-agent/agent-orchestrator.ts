@@ -5,10 +5,15 @@ import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmToolCall,
 import type { QueryFact } from "./tools/query-fact";
 import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
-import { toolRegistry } from "./tools/tool-registry";
+import { CATALOG_TOOL, GAP_TOOL, toolRegistry } from "./tools/tool-registry";
+import { checkGap, type ExecutedOperation, type GapCheckResult } from "./tools/gap-check";
+import { parseGapDeclaration } from "./tools/report-gap";
+import { describeModule } from "./tools/tool-catalog";
+import { buildSystemPrompt } from "./tools/system-prompt";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
 import { AgentContextManager } from "./context-manager";
 import type { AgentObservability } from "./observability";
+import type { GapReportInput } from "./gap-candidates";
 
 /**
  * Agent orchestrator：唯一运行入口（模块设计「Agent orchestrator」行）。
@@ -24,7 +29,6 @@ import type { AgentObservability } from "./observability";
  *   - 致命失败（撤权、取消、超时、非业务异常）：仍直接收进 failed 终态。
  */
 
-const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。任何单号（销售单、采购单、生产单）都先用 order_query 的 search_documents 检索，再原样使用结果里的 order_ref 做后续查询，不要复制或改写单号。没有具体单号、问的是列表或跨单汇总时，用 list_documents（按状态/客户/产品/日期）、list_low_stock_materials（哪些物料库存不足）、list_overdue_arrivals（哪些采购到货超期），这三个都不需要 order_ref。";
 export const AGENT_MAX_TOOL_STEPS = 16;
 export const AGENT_MAX_PLAN_STEPS = 4;
 export const AGENT_MAX_RECOVERABLE_TOOL_FAILURES = 3;
@@ -38,6 +42,7 @@ const RECOVERABLE_TOOL_ERROR_CODES = new Set([
   "ORDER_REF_REQUIRED",
   "AGENT_TOOL_ARGUMENT_INVALID",
   "AGENT_TOOL_UNKNOWN",
+  "AGENT_CATALOG_MODULE_UNKNOWN",
   "AGENT_OPERATION_NOT_IMPLEMENTED",
   "AGENT_TOOL_FORBIDDEN",
 ]);
@@ -97,11 +102,17 @@ function httpErrorMessage(error: HttpException, fallback: string): string {
   return typeof message === "string" && message.length > 0 ? message : fallback;
 }
 
-export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability };
+function rowCount(data: unknown): number {
+  if (Array.isArray(data)) return data.length;
+  return data === null || data === undefined ? 0 : 1;
+}
+
+export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability; gapCandidates?: { record(input: GapReportInput): Promise<unknown> } };
 
 export class AgentOrchestrator {
   private readonly runTimeoutMs: number;
   private readonly observability?: AgentObservability;
+  private readonly gapCandidates?: AgentOrchestratorOptions["gapCandidates"];
   /** 内部错误的服务端堆栈日志（R-11）：只进服务端日志，不进 SSE 事件与对外信封。 */
   private readonly logger = new Logger("business-query-agent");
 
@@ -115,9 +126,10 @@ export class AgentOrchestrator {
   ) {
     this.runTimeoutMs = options?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     this.observability = options?.observability;
+    this.gapCandidates = options?.gapCandidates;
   }
 
-  async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
+  async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal, contextRunIds?: readonly string[]): Promise<void> {
     // 重读并确认仍是 planning：用户可能在编排器启动前就取消（迟到启动是无害空转）。
     const fresh = await this.state.findRun(run.id, principal.user.id);
     if (!fresh || fresh.state !== "planning") return;
@@ -127,21 +139,21 @@ export class AgentOrchestrator {
       : signal;
     const startedAt = Date.now();
     try {
-      await this.queryPhase(fresh, principal, composed);
+      await this.queryPhase(fresh, principal, composed, contextRunIds);
     } catch (error) {
       await this.failRun(fresh.id, principal.user.id, error, startedAt);
     }
   }
 
-  private async queryPhase(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
+  private async queryPhase(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal, contextRunIds?: readonly string[]): Promise<void> {
     const runId = run.id;
     const startedAt = Date.now();
     const tools = toolRegistry.visibleTools(run.accessLevel as "full" | "operational");
     const history = this.context
-      ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel)
+      ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel, contextRunIds)
       : [];
     const messages: AgentLlmMessage[] = [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: buildSystemPrompt(run.accessLevel as AgentAccessLevel) },
       ...history,
       { role: "user", content: run.question },
     ];
@@ -159,6 +171,8 @@ export class AgentOrchestrator {
     const searchRefs = await this.loadSessionRefs(principal.user.id, run.sessionId);
     const searchedOrderNos = new Set<string>([...searchRefs.values()]);
     const refCounter = { value: maxRefIndex(searchRefs) };
+    const executed: ExecutedOperation[] = [];
+    const declaredGaps = new Set<string>();
     let attempted = 0;
     let modelSteps = 0;
     let recoverableFailures = 0;
@@ -184,6 +198,22 @@ export class AgentOrchestrator {
             continue;
           }
           attempted += 1;
+          if (call.tool === CATALOG_TOOL) {
+            const described = await this.describeCatalog(runId, principal, call, run.accessLevel as AgentAccessLevel);
+            messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: described.ok ? described.content : JSON.stringify({ error: { code: described.code, message: described.message } }) });
+            if (described.ok) continue;
+            recoverableFailures += 1;
+            if (recoverableFailures >= AGENT_MAX_RECOVERABLE_TOOL_FAILURES) {
+              exhausted = { code: described.code, message: described.message };
+              break;
+            }
+            continue;
+          }
+          if (call.tool === GAP_TOOL) {
+            const checked = await this.declareGap(run, principal, call, executed, declaredGaps);
+            messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify(checked.accepted ? { result: "已记录" } : { error: { code: checked.code, message: checked.message } }) });
+            continue;
+          }
           await this.appendToolArgs(runId, call);
           const resolved = this.resolveRootCall(call, searchRefs, searchedOrderNos);
           const outcome = resolved.error
@@ -191,6 +221,7 @@ export class AgentOrchestrator {
             : await this.executeTool(runId, principal, resolved.call ?? call, signal);
           if (outcome.ok) {
             facts.push(outcome.fact);
+            executed.push({ operation: call.operation, rows: rowCount(outcome.fact.data) });
             const issued = this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
             if (issued.length > 0) await this.persistRefs(runId, issued);
             if (SEARCH_OPERATIONS.has(call.operation)) {
@@ -223,7 +254,7 @@ export class AgentOrchestrator {
 
     // 空结果也要说清楚（R-6）：一句「查不到」对用户没有信息量，检索词与 0 条才有。
     // 注意判据是「有没有数据行」，不是「有没有事实」——检索成功但 0 行同样会留下一条事实。
-    const hasRows = facts.some((fact) => (Array.isArray(fact.data) ? fact.data.length > 0 : fact.data !== null && fact.data !== undefined));
+    const hasRows = facts.some((fact) => rowCount(fact.data) > 0);
     if (!hasRows && searchQueries.length > 0) {
       messages.push({ role: "system", content: `本轮用「${searchQueries.join("」「")}」检索，命中 0 条。回答必须写明检索词与 0 条结果，并提示用户核对单号；不得编造业务结论。` });
     }
@@ -401,6 +432,54 @@ export class AgentOrchestrator {
     }).catch(() => {});
     this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: 0, error_code: code });
     return { ok: false, code, message };
+  }
+
+  private async describeCatalog(runId: string, principal: AgentPrincipal, call: AgentLlmToolCall, accessLevel: AgentAccessLevel): Promise<{ ok: true; content: string } | { ok: false; code: string; message: string }> {
+    await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } }] });
+    const startedAt = Date.now();
+    const moduleName = typeof call.args?.module === "string" ? call.args.module : "";
+    try {
+      const content = JSON.stringify(describeModule(moduleName, accessLevel));
+      await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "completed" } }] });
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "completed", result_rows: 0, duration_ms: Date.now() - startedAt });
+      return { ok: true, content };
+    } catch (error) {
+      const code = httpErrorCode(error) ?? "AGENT_TOOL_FAILED";
+      if (!(error instanceof HttpException && RECOVERABLE_TOOL_ERROR_CODES.has(code))) throw error;
+      const message = httpErrorMessage(error, "目录展开失败");
+      await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "failed", code } }] }).catch(() => {});
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: Date.now() - startedAt, error_code: code });
+      return { ok: false, code, message };
+    }
+  }
+
+  private async declareGap(run: AgentRunRow, principal: AgentPrincipal, call: AgentLlmToolCall, executed: readonly ExecutedOperation[], declared: Set<string>): Promise<GapCheckResult> {
+    const runId = run.id;
+    await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } }] });
+    const startedAt = Date.now();
+    let result: GapCheckResult;
+    try {
+      result = checkGap(parseGapDeclaration(call.args, run.question), { accessLevel: run.accessLevel as AgentAccessLevel, executed, question: run.question });
+    } catch (error) {
+      const code = httpErrorCode(error);
+      if (!(error instanceof HttpException) || !code) throw error;
+      result = { accepted: false, code, message: httpErrorMessage(error, "缺口声明失败") };
+    }
+    if (result.accepted) {
+      const key = `${result.gap.nearest_operation}:${result.gap.missing}`;
+      if (!declared.has(key)) {
+        declared.add(key);
+        await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "gap_declared", payload: { ...result.gap } }] }).catch(() => {});
+        await this.gapCandidates?.record({ sessionId: run.sessionId, runId, gap: result.gap }).catch((error: unknown) => {
+          this.logger.warn(`run ${runId} 缺口候选记录失败：${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+    }
+    const status = result.accepted ? "completed" : "failed";
+    const errorCode = result.accepted ? undefined : result.code;
+    await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status, ...(errorCode ? { code: errorCode } : {}) } }] });
+    this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status, result_rows: 0, duration_ms: Date.now() - startedAt, ...(errorCode ? { error_code: errorCode } : {}) });
+    return result;
   }
 
   private async executeTool(runId: string, principal: AgentPrincipal, call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {

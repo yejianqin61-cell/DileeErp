@@ -1,4 +1,13 @@
-import { IsNotEmpty, IsString, IsUUID } from "class-validator";
+import { Transform } from "class-transformer";
+import { ArrayMaxSize, IsArray, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+
+export class UpdateSessionDto {
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString({ message: "title 必须是字符串" })
+  @IsNotEmpty({ message: "title 不能为空" })
+  @MaxLength(100, { message: "title 不能超过 100 个字" })
+  title!: string;
+}
 
 /**
  * POST /business-query/sessions/:id/runs 的请求体（模块设计「API 权限与数据表」）。
@@ -13,4 +22,10 @@ export class CreateRunDto {
 
   @IsUUID(undefined, { message: "client_message_id 必须是 UUID" })
   client_message_id!: string;
+
+  @IsOptional()
+  @IsArray({ message: "context_run_ids 必须是数组" })
+  @ArrayMaxSize(200, { message: "context_run_ids 最多 200 项" })
+  @IsUUID(undefined, { each: true, message: "context_run_ids 的每一项必须是 UUID" })
+  context_run_ids?: string[];
 }
