@@ -1,0 +1,3987 @@
+{
+  "runAt": "2026-11-26T13:00:43.046Z",
+  "apiBase": "http://127.0.0.1:3111/api/v1",
+  "docCount": 6,
+  "reps": 3,
+  "judged": [
+    {
+      "id": "decoy-01",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 1
+    },
+    {
+      "id": "decoy-02",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 1
+    },
+    {
+      "id": "decoy-03",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-04",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-05",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-06",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-07",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-08",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-09",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "decoy-10",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "gap-01",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 1
+    },
+    {
+      "id": "gap-02",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "gap-03",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "gap-04",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 1
+    },
+    {
+      "id": "gap-05",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "gap-06",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "gap-07",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 1
+    },
+    {
+      "id": "gap-08",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 1
+    },
+    {
+      "id": "gap-09",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 1
+    },
+    {
+      "id": "gap-10",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 1
+    },
+    {
+      "id": "decoy-01",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 2
+    },
+    {
+      "id": "decoy-02",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 2
+    },
+    {
+      "id": "decoy-03",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "decoy-04",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 2
+    },
+    {
+      "id": "decoy-05",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "decoy-06",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "decoy-07",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "decoy-08",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "decoy-09",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "decoy-10",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "gap-01",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 2
+    },
+    {
+      "id": "gap-02",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 2
+    },
+    {
+      "id": "gap-03",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "gap-04",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 2
+    },
+    {
+      "id": "gap-05",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "gap-06",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 2
+    },
+    {
+      "id": "gap-07",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "gap-08",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 2
+    },
+    {
+      "id": "gap-09",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 2
+    },
+    {
+      "id": "gap-10",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 2
+    },
+    {
+      "id": "decoy-01",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 3
+    },
+    {
+      "id": "decoy-02",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 3
+    },
+    {
+      "id": "decoy-03",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "decoy-04",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 2,
+      "rep": 3
+    },
+    {
+      "id": "decoy-05",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "decoy-06",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "decoy-07",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "decoy-08",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "decoy-09",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "decoy-10",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-01",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 3
+    },
+    {
+      "id": "gap-02",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-03",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "ORDER_SEARCH_REQUIRED"
+      ],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-04",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 3
+    },
+    {
+      "id": "gap-05",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-06",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-07",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-08",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 3,
+      "rep": 3
+    },
+    {
+      "id": "gap-09",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 3
+    },
+    {
+      "id": "gap-10",
+      "group": "gap",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [],
+      "modelSteps": 1,
+      "rep": 3
+    }
+  ],
+  "entries": [
+    {
+      "caseDef": {
+        "id": "decoy-01",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_overdue_arrivals"
+        },
+        "question": "有哪些采购单已经过了预计到货日还没到齐"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-01",
+        "group": "gap",
+        "turns": [
+          "有哪些采购单已经过了预计到货日还没到齐"
+        ],
+        "sessionId": "fafb638d-5dcb-4149-a9f3-347719f970b2",
+        "durationMs": 5734,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_overdue_arrivals"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          }
+        ],
+        "answer": "有 2 张采购单已经过了预计到货日，且仍未到齐；截至 2026-11-26：\n\n| 采购单号 | 关联订单 | 供应商 | 预计到货日 | 超期天数 | 状态 |\n|---|---|---|---|---|---|\n| MOCK-PO-001 | MOCK-ORD-001 | 宁波伞布供应商（模拟） | 2026-08-28 | 90 天 | 部分到货（partially_arrived） |\n| MOCK-PO-002 | MOCK-ORD-002 | 苏州加工点（模拟） | 2026-09-01 | 86 天 | 已下单（ordered） |\n\n判断依据：预计到货日早于今天，且采购单状态不是已到齐或已取消。以上数据来自采购模块的超期到货清单，来源单据为 MOCK-PO-001、MOCK-PO-002。\n\n如需查看某张采购单的明细、到货记录或来料质检情况，告诉我单号，我继续查。",
+        "toolCalls": 1,
+        "answerChunks": 227,
+        "modelSteps": 2,
+        "runIds": [
+          "263280ee-0d2c-4858-a681-aa6a6fd56416"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-02",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_low_stock_materials"
+        },
+        "question": "仓库里什么料快没了"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-02",
+        "group": "gap",
+        "turns": [
+          "仓库里什么料快没了"
+        ],
+        "sessionId": "216bc662-3106-468e-a307-27a6a2368f72",
+        "durationMs": 3955,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_low_stock_materials"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "库存不足物料清单查询结果为空（数据截至 2026-11-26 13:00）——也就是说，当前系统里没有触发“库存不足”标记的物料。\n\n需要说明的是，这个列表只覆盖已被标记为低于安全库存阈值的物料；如果你想看某个具体物料的实时余额，可以告诉我物料名称或某张订单，我按订单查物料余额。",
+        "toolCalls": 1,
+        "answerChunks": 81,
+        "modelSteps": 2,
+        "runIds": [
+          "010a6cea-e3da-4025-89b9-3b27a8dcac69"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-03",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_documents"
+        },
+        "question": "上个月更新过的、已确认的单子列一下"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-03",
+        "group": "gap",
+        "turns": [
+          "上个月更新过的、已确认的单子列一下"
+        ],
+        "sessionId": "01b62521-d231-45f8-9faf-9f09959fc23c",
+        "durationMs": 5783,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"order_query\">\n<｜｜DSML｜｜ parameter name=\"operation\" string=\"true\">list_documents</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"status\" string=\"true\">confirmed</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+        "toolCalls": 2,
+        "answerChunks": 55,
+        "modelSteps": 3,
+        "runIds": [
+          "58597708-9432-457c-8539-314acc35bb37"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-04",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "search_documents"
+        },
+        "question": "单号里带 0001 的销售订单有哪些"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-04",
+        "group": "gap",
+        "turns": [
+          "单号里带 0001 的销售订单有哪些"
+        ],
+        "sessionId": "39c8d5e4-ed21-49ce-bc22-7aa9d9d1b635",
+        "durationMs": 6330,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "list_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "没有查到带「0001」的销售订单。\n\n- 我用单号检索（关键字「0001」）返回 0 条结果。\n- 在订单列表中，目前只有 2 条销售订单，单号分别是 MOCK-ORD-002（黑色直柄伞，600 个，草稿）和 MOCK-ORD-001（蓝色折叠伞，1000 个，已确认）。它们的单号都不含「0001」这个连续片段，只有 MOCK-ORD-001 的末尾是 001。\n\n如果你指的是其他单号格式（例如带前缀或带年份的编号），请提供更完整的单号或其它线索，我再查。",
+        "toolCalls": 2,
+        "answerChunks": 144,
+        "modelSteps": 3,
+        "runIds": [
+          "510b1758-6717-4a01-a8db-28da40117f8e"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-05",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_order_overview"
+        },
+        "question": "MOCK-ORD-001 现在走到哪个环节了"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-05",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 现在走到哪个环节了"
+        ],
+        "sessionId": "0f845449-0fd5-4273-904c-647358d70a28",
+        "durationMs": 8580,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 目前处于**存在阻塞**状态，还没有走完。按订单全链路看，各环节进展如下（数据来自订单总览）：\n\n| 环节 | 状态 | 关键数据 |\n|---|---|---|\n| 销售订单 | 已确认（confirmed） | 产品为蓝色折叠伞，数量 1000 个，交期 2026-09-20 |\n| BOM | 已完成 | BOM 需求量 3.2 |\n| 采购（MOCK-PO-001） | 进行中 | 下单 1200，到货 1200，检验 1200，合格 1180，让步接收 10，已入库 1180 |\n| 原材料库存 | 进行中 | 入库 1180，领用 300，退回 20，报废 0 |\n| 生产（MOCK-PROD-001） | 进行中 | 计划 1000，工序完成量 1240 |\n| 成品质检（MOCK-FG-QC-REC-001） | 已完成 | 检验 1200，合格 410，让步接收 5，不合格 10，成品入库 410 |\n| 成品库存 | 已完成 | 库存 210（其中不良品 5），入库过账 410，待入库 10，已出库 200 |\n| 发货（MOCK-FG-OUT-001） | 已完成 | 发货 200 |\n\n阻塞原因：**PRODUCTION_OVER_PLAN：工序完成量超过生产计划**（生产计划的 1000 与工序完成量的 1240 相较）。系统建议核对工序员工日报，并做超单确认。\n\n需要我进一步查看生产工序明细或报工记录，以定位超出计划的是哪道工序吗？",
+        "toolCalls": 3,
+        "answerChunks": 383,
+        "modelSteps": 3,
+        "runIds": [
+          "0352aec7-f2ed-4879-a968-20a8c1ba8293"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-06",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_customer"
+        },
+        "question": "MOCK-ORD-001 的客户是谁"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-06",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 的客户是谁"
+        ],
+        "sessionId": "fa5facc1-a360-4028-93db-aa6aafcdfaac",
+        "durationMs": 3903,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_customer"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 对应的客户是 **海风家居（模拟）**，客户编码为 MOCK-C-001。\n\n来源：销售模块的客户查询（依据销售单 MOCK-ORD-001，订单引用 o_1）。该单产品为蓝色折叠伞，数量 1000 个，状态为已确认。",
+        "toolCalls": 2,
+        "answerChunks": 72,
+        "modelSteps": 3,
+        "runIds": [
+          "777a42e5-fa5f-44c4-a0a5-eceffa0ea631"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-07",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_finished_goods_outbounds"
+        },
+        "question": "MOCK-ORD-001 货发出去多少了"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-07",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 货发出去多少了"
+        ],
+        "sessionId": "45daff88-1895-44cd-aed7-d1d67054dea7",
+        "durationMs": 7050,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_finished_goods_outbounds",
+          "get_finished_goods_inbounds"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_outbound",
+            "business_no": "MOCK-FG-OUT-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_outbound",
+            "business_no": "MOCK-FG-OUT-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，订单量 1000 个）的发货情况：\n\n- **已完成出货**：1 笔，出库单 MOCK-FG-OUT-001，数量 **200 个**，发货日期 2026-08-26，状态已签收。\n- 参考入库侧：成品入库单 MOCK-FG-IN-001 已过账 **410 个**（对应入库通知 MOCK-FGN-001，计划 420 个，状态部分入库）。\n\n也就是说按出货单口径，1000 个里已发出 200 个；成品已入库 410 个，尚有部分未出库。以上数字分别来自成品出货单 MOCK-FG-OUT-001 和成品入库单 MOCK-FG-IN-001。",
+        "toolCalls": 3,
+        "answerChunks": 173,
+        "modelSteps": 3,
+        "runIds": [
+          "15cd04fe-2d60-472c-b1b1-405b6ed5eedd"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-08",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_incoming_inspections"
+        },
+        "question": "MOCK-ORD-001 的来料质检都合格吗"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-08",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 的来料质检都合格吗"
+        ],
+        "sessionId": "af96872c-d10b-4bd3-b208-9598568d1011",
+        "durationMs": 6923,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "不是全部合格，有两批来料质检（订单 MOCK-ORD-001）：\n\n| 收货单 | 检验数 | 合格数 | 让步接收数 | 不合格数 | 状态 |\n|---|---|---|---|---|---|\n| MOCK-REC-002 | 500 | 500 | 0 | 0 | passed |\n| MOCK-REC-001 | 700 | 680 | 10 | 10 | passed |\n\n- **MOCK-REC-002**：500 个全部合格，没有不良。\n- **MOCK-REC-001**：700 个中有 680 个合格，另有 10 个作让步接收和 10 个判为不合格，合格率为 680/700，约 97.1%。\n\n需要说明的是，这两张单据的整体判定状态都是 passed，即整批已放行；但 MOCK-REC-001 实际存在 10 个让步接收和 10 个不合格的数量。因此严格来说，“都合格”并不成立。\n\n如果你更关注那 10 个不合格品后续是退货还是补货，我可以再查采购到货或退货相关记录。",
+        "toolCalls": 2,
+        "answerChunks": 242,
+        "modelSteps": 3,
+        "runIds": [
+          "c7f45b3e-ccc6-40be-bff7-fc24435b3060"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-09",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_bom"
+        },
+        "question": "MOCK-ORD-001 用了哪些物料、各要多少"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-09",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 用了哪些物料、各要多少"
+        ],
+        "sessionId": "7a8b71ef-1b47-4d48-8576-4abcad563230",
+        "durationMs": 7118,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_bom"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个，销售单状态已确认）的 BOM（第 1 版，已发布）包含以下 3 种物料，每种物料在 BOM 中的单耗如下：\n\n| 物料 | 单耗 | 单位 |\n|---|---|---|\n| 伞布-蓝色（模拟） | 1.2 | 码 |\n| 伞骨-铝合金（模拟） | 1 | 个 |\n| 包装袋（模拟） | 1 | 个 |\n\n数据来源：销售模块 BOM 查询（sales_query/get_bom），订单号为 MOCK-ORD-001。\n\n需要说明的是：上述数字是 BOM 中的**单位用量**。系统返回的 BOM 里没有给出按订单 1000 个汇总后的需求总量；按单位用量计算，伞布约为 1200 码、伞骨 1000 个、包装袋 1000 个，但这只是根据单耗推算，并非单据直接给出的汇总数量。如果需要实际领用或库存数据，我可以再查该订单的物料余额和领退记录。",
+        "toolCalls": 2,
+        "answerChunks": 243,
+        "modelSteps": 3,
+        "runIds": [
+          "0f3f5d75-0ec9-4b9a-8e43-da04e85d240e"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-10",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_operation_progress"
+        },
+        "question": "MOCK-ORD-001 每道工序做完了多少"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "decoy-10",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 每道工序做完了多少"
+        ],
+        "sessionId": "1b644d44-258d-4e31-b050-1c81c9289160",
+        "durationMs": 6073,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_operation_progress"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个）对应的生产单号是 MOCK-PROD-001；它的工序完成情况如下（数据来自生产单 MOCK-PROD-001 的工序进度，截至 2026-11-26）：\n\n| 顺序 | 工序 | 计划数 | 已完成 | 完成率 | 状态 |\n|---|---|---|---|---|---|\n| 1 | 裁剪（模拟） | 1000 | 420 | 42% | 进行中 |\n| 2 | 缝制（模拟） | 1000 | 400 | 40% | 进行中 |\n| 3 | 包装（模拟） | 1000 | 420 | 42% | 进行中 |\n\n三道工序都还没做完，都处于进行中状态。",
+        "toolCalls": 2,
+        "answerChunks": 173,
+        "modelSteps": 3,
+        "runIds": [
+          "c911a43e-1a53-4142-af62-9f74da612771"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-01",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_payables"
+        },
+        "question": "按供应商汇总本月采购金额"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-01",
+        "group": "gap",
+        "turns": [
+          "按供应商汇总本月采购金额"
+        ],
+        "sessionId": "5c2f7f14-8cc9-4d12-ac27-a7b0bd68d698",
+        "durationMs": 3312,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "你的问题需要按供应商汇总本月采购金额，我按流程处理如下：\n\n1. **采购金额**：这属于金额/财务数据。当前账号没有财务权限，采购单价、金额、按供应商汇总金额这类数据我无法查看，需要财务权限的账号才能查询。\n2. **按供应商汇总**：本账号的采购模块只支持按订单查询采购计划、采购单、到货、来料质检，以及列出超期到货；不支持按供应商汇总。\n\n因此，这个问题目前无法回答。如果你需要看某个订单的采购到货或质检情况，可以告诉我单号，我帮你查。",
+        "toolCalls": 0,
+        "answerChunks": 131,
+        "modelSteps": 1,
+        "runIds": [
+          "04e3ff78-ceac-48f9-9a7d-b1a4fdee83dd"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-02",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_documents"
+        },
+        "question": "最近六个月每月的销售订单数量趋势"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-02",
+        "group": "gap",
+        "turns": [
+          "最近六个月每月的销售订单数量趋势"
+        ],
+        "sessionId": "0084156f-8749-44c2-a44f-2a394e281340",
+        "durationMs": 5427,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个问题目前查不了。订单模块里最接近的是 `list_documents`，它确实能按更新日期区间列出销售单，但只能逐页列出每张单（每页 20 行），**不分组、不计数**，也没法按月汇总笔数。所以「最近六个月每月销售订单数量」这种按月分组统计的趋势，现有工具做不出来。\n\n如果想看具体数据，我可以帮你：\n- 按某个月（或某个日期区间）列出销售单明细，你再自己数；\n- 或者按状态、客户、产品筛选列单。",
+        "toolCalls": 0,
+        "answerChunks": 120,
+        "modelSteps": 3,
+        "runIds": [
+          "d6a0cdbc-7435-4aa1-bbc3-bf9099ec8ea4"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_documents",
+            "missing": "time_series"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-03",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_low_stock_materials"
+        },
+        "question": "各个仓库的原料库存分别是多少"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-03",
+        "group": "gap",
+        "turns": [
+          "各个仓库的原料库存分别是多少"
+        ],
+        "sessionId": "740aabea-8efb-46c6-8e50-e77cd156ec70",
+        "durationMs": 6039,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个问题目前查不了：现有库存工具里没有“按仓库分组查看原料库存”的查询。\n\n具体来说：\n- **最接近的**是 `list_low_stock_materials`（哪些原料库存不足），但它的边界是按**物料和单位**汇总，不按仓库拆分，而且只返回净库存 ≤ 0 的物料，不是全部原料库存。\n- `get_raw_material_balance` 要求先有某张订单，返回的也只是该订单 BOM 里的物料当前实存量，并且是**全局口径**，不区分仓库。\n\n也就是说，工具缺的是“以仓库为主体、按仓库分组列出原料库存数量”的能力。如果你告诉我具体某张订单，我可以查那张订单 BOM 物料的当前实存量，或者查该订单相关的领退料和库存变动流水。需要按仓库看原料库存的话，得换具备仓库维度库存报表的查询途径。\n\n（另：库存金额、单价这类数据本账号没有财务权限，看不到。）",
+        "toolCalls": 0,
+        "answerChunks": 210,
+        "modelSteps": 3,
+        "runIds": [
+          "cbba2cc6-3397-45fc-932a-7cfeb962f966"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_low_stock_materials",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-04",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_receivables"
+        },
+        "question": "本月所有订单的应收账款总额是多少"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-04",
+        "group": "gap",
+        "turns": [
+          "本月所有订单的应收账款总额是多少"
+        ],
+        "sessionId": "6ddd8893-5ce2-452f-9896-f6fc3029793d",
+        "durationMs": 1961,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个问题我没法回答：当前账号没有财务权限。应收账款属于财务数据，系统里有，但这个账号看不到；需要财务权限的账号才能查询。",
+        "toolCalls": 0,
+        "answerChunks": 31,
+        "modelSteps": 1,
+        "runIds": [
+          "f59ef636-55dd-4fd4-bc38-519eb0f04bbe"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-05",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_documents"
+        },
+        "question": "每个客户累计下了多少张订单"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-05",
+        "group": "gap",
+        "turns": [
+          "每个客户累计下了多少张订单"
+        ],
+        "sessionId": "e37dca1f-d8bb-40b7-a749-5d0ac835f231",
+        "durationMs": 8416,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "list_documents",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "目前无法直接回答“每个客户累计下了多少张订单”这个问题。\n\n原因：订单模块里最接近的是 `list_documents`，可以列出销售单，每行带有客户名，但它**不支持分组统计**，题目明确不分组、不计数，而且每页最多 20 行，也没有能按客户汇总的接口。\n\n我实际能查到的只是销售单列表的前一页两条（来自 MOCK-ORD-002、MOCK-ORD-001）：\n\n| 单号 | 客户 | 产品 | 数量 | 状态 | 下单日期 |\n|---|---|---|---|---|---|\n| MOCK-ORD-002 | 远山贸易（模拟） | 黑色直柄伞 | 600 个 | draft | 2026-08-21 |\n| MOCK-ORD-001 | 海风家居（模拟） | 蓝色折叠伞 | 1000 个 | confirmed | 2026-08-20 |\n\n这只是分页后的一页，不能据此得出各客户的累计订单数。\n\n如果你需要，我可以按指定客户或日期区间逐页拉出销售单给你人工核对；或者这个“按客户统计订单数”的需求需要由系统侧提供汇总接口后才能回答。",
+        "toolCalls": 1,
+        "answerChunks": 256,
+        "modelSteps": 3,
+        "runIds": [
+          "08834ba7-d841-4d0a-82af-dac0a6cf08ff"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_documents",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-06",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_payroll"
+        },
+        "question": "每个员工本月报工总量排名"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-06",
+        "group": "gap",
+        "turns": [
+          "每个员工本月报工总量排名"
+        ],
+        "sessionId": "ff48eec3-341d-42aa-b710-78ace70f0081",
+        "durationMs": 5639,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "目前无法回答这个问题。\n\n原因：生产模块的报工查询（get_operation_reports）只能按单张订单查每天的报工记录，返回生产单号、工序、报工日期、完成数量，但**不含员工字段**，也无法跨订单按员工汇总、按本月时间范围筛选统计。因此系统里没有可用于统计“每个员工本月报工总量”的查询入口。\n\n如果要做这个统计，需要生产模块增加带员工维度的报工明细，并按员工和月份汇总。",
+        "toolCalls": 0,
+        "answerChunks": 107,
+        "modelSteps": 3,
+        "runIds": [
+          "a826cfa9-5bcf-49f7-8bcd-2f3d510f430c"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_operation_reports",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-07",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_overdue_arrivals"
+        },
+        "question": "哪些供应商的采购单延期最多"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-07",
+        "group": "gap",
+        "turns": [
+          "哪些供应商的采购单延期最多"
+        ],
+        "sessionId": "1e3c6292-7601-4180-bc2a-e9aad0079e9a",
+        "durationMs": 5787,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_overdue_arrivals"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          }
+        ],
+        "answer": "能查到延期明细，但**无法给出\"按供应商汇总延期最多\"的排序**：采购模块只能列出到货超期的采购单，不支持按供应商汇总统计。\n\n目前查到的超期采购单（截至 2026-11-26）如下：\n\n| 采购单号 | 关联订单 | 供应商 | 预计到货日 | 逾期天数 | 单据状态 |\n|---|---|---|---|---|---|\n| MOCK-PO-001 | MOCK-ORD-001 | 宁波伞布供应商（模拟） | 2026-08-28 | 90 天 | 部分到货 |\n| MOCK-PO-002 | MOCK-ORD-002 | 苏州加工点（模拟） | 2026-09-01 | 86 天 | 已下单 |\n\n数据来源：采购单 MOCK-PO-001、MOCK-PO-002（`list_overdue_arrivals`）。\n\n以上只是当前系统里全部的超期采购单，恰好各来自一家供应商，因此从这份列表看，宁波伞布供应商（模拟）逾期 90 天、苏州加工点（模拟）逾期 86 天，前者更久。但如果需要\"哪家供应商延期笔数最多／累计延期天数最多\"这类排名，就需要按供应商分组统计的能力；现有工具做不到，请告诉我是否需要我登记这个缺口。",
+        "toolCalls": 1,
+        "answerChunks": 286,
+        "modelSteps": 2,
+        "runIds": [
+          "d72c44fb-66af-4518-bb48-3ffa3affdec4"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-08",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_finished_goods_outbounds"
+        },
+        "question": "这个月和上个月的成品出库数量对比"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-08",
+        "group": "gap",
+        "turns": [
+          "这个月和上个月的成品出库数量对比"
+        ],
+        "sessionId": "7dcf7c3b-0eed-43e4-8024-5a758bbe4fda",
+        "durationMs": 5608,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "目前查不到这个月和上个月的成品出库数量对比。\n\n原因：库存模块里与成品出库相关的只有「按某张订单查成品出库与发货情况」（get_finished_goods_outbounds），必须先指定订单单据根，返回的也只是该订单的出库明细。现有工具都没有「按月份区间汇总成品出库数量」这种以时间为主体的统计能力，因此无法把两个月的数据聚合起来做对比。\n\n如果你想换个角度，我可以帮你查：\n- 某张具体订单的成品出库明细，包括出库单号、状态、数量、发货日期\n- 某张具体订单的成品质检、入库通知与入库情况\n\n请告诉我订单号（销售单、采购单或生产单都行，我会先检索确认），或者说明要查哪几笔订单，我就去查。",
+        "toolCalls": 0,
+        "answerChunks": 175,
+        "modelSteps": 3,
+        "runIds": [
+          "2d210152-dd73-4b37-857e-dd17b18ce582"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_finished_goods_outbounds",
+            "missing": "time_series"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-09",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_cost_profit"
+        },
+        "question": "管理费用科目本月发生额是多少"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-09",
+        "group": "gap",
+        "turns": [
+          "管理费用科目本月发生额是多少"
+        ],
+        "sessionId": "3ec8b347-f309-418b-afde-efcb83f9b044",
+        "durationMs": 1752,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "抱歉，这个问题我没法回答：您的账号没有财务权限，管理费用科目发生额属于财务数据，系统里虽然有，但本账号看不到。如需查询，请使用具备财务权限的账号，或联系财务部门。",
+        "toolCalls": 0,
+        "answerChunks": 46,
+        "modelSteps": 1,
+        "runIds": [
+          "e0407727-6c80-485c-aaa5-d7b72e587246"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-10",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_cost_profit"
+        },
+        "question": "全公司各订单的毛利排名"
+      },
+      "rep": 1,
+      "outcome": {
+        "id": "gap-10",
+        "group": "gap",
+        "turns": [
+          "全公司各订单的毛利排名"
+        ],
+        "sessionId": "8bd478e8-0982-414c-86c4-a5e1f16b5544",
+        "durationMs": 1960,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "您问的是毛利排名，这属于金额、成本和利润类数据。当前账号没有财务权限，系统里这类数据存在，但本账号看不到，因此无法为您查询或排名。需要具备财务权限的账号才能查看。\n\n如果您愿意，我可以帮您查其他维度的订单排名或对比，比如订单全链路进度、生产工序完成情况、采购到货情况、库存余量等。",
+        "toolCalls": 0,
+        "answerChunks": 84,
+        "modelSteps": 1,
+        "runIds": [
+          "44455e27-23ed-41d8-aa15-8ff7867edae4"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-01",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_overdue_arrivals"
+        },
+        "question": "有哪些采购单已经过了预计到货日还没到齐"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-01",
+        "group": "gap",
+        "turns": [
+          "有哪些采购单已经过了预计到货日还没到齐"
+        ],
+        "sessionId": "b7f7320c-ddaf-42bc-a350-cbfb97c7fe34",
+        "durationMs": 4750,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_overdue_arrivals"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          }
+        ],
+        "answer": "会有采购单预计到货日已过，尚未到齐。截至 2026-11-26 的查询结果如下，共 2 张：\n\n| 采购单号 | 关联订单 | 供应商 | 预计到货日 | 超期天数 | 采购单状态 |\n|---|---|---|---|---|---|\n| MOCK-PO-001 | MOCK-ORD-001 | 宁波伞布供应商（模拟） | 2026-08-28 | 90 天 | partially_arrived（部分到货） |\n| MOCK-PO-002 | MOCK-ORD-002 | 苏州加工点（模拟） | 2026-09-01 | 86 天 | ordered（已下单未到货） |\n\n判定依据：预计到货日早于今天，并且采购单状态不是已全部到货，也不是已取消。以上信息来自采购单 MOCK-PO-001、MOCK-PO-002。\n\n如需进一步查看某张采购单的到货明细或来料质检情况，可以告诉我单号。",
+        "toolCalls": 1,
+        "answerChunks": 224,
+        "modelSteps": 2,
+        "runIds": [
+          "7dc7f375-d7cc-43c3-97b3-c1d5b62f3c4c"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-02",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_low_stock_materials"
+        },
+        "question": "仓库里什么料快没了"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-02",
+        "group": "gap",
+        "turns": [
+          "仓库里什么料快没了"
+        ],
+        "sessionId": "8a2f8014-bfd4-4317-839c-9d7bf903fc13",
+        "durationMs": 3663,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_low_stock_materials"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我查了库存里“库存不足”的物料清单，截至 2026-11-26 13:02，返回结果是空的，也就是说当前系统里没有触发缺料预警的物料。\n\n不过需要说明以下几点：\n- 这个结果来自 `list_low_stock_materials`（低库存物料清单），它的判定基于系统预设的库存下限规则；如果某些物料没有设置下限，就不会出现在这个清单里。\n- 如果你想看具体某个仓库或某种物料的实际结存数量，可以告诉我物料或订单，我用库存余额、流水去查。",
+        "toolCalls": 1,
+        "answerChunks": 120,
+        "modelSteps": 2,
+        "runIds": [
+          "648daf2c-854d-46c8-b185-c6bee361aaf8"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-03",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_documents"
+        },
+        "question": "上个月更新过的、已确认的单子列一下"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-03",
+        "group": "gap",
+        "turns": [
+          "上个月更新过的、已确认的单子列一下"
+        ],
+        "sessionId": "a3419e15-12b2-47a9-b0fd-ec77dcdd9d59",
+        "durationMs": 6483,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我查了两次，都没有结果，所以这个问题目前答不了。原因有两个：\n\n1. **“上个月”的具体是哪个月不确定**：系统当前时间是 2026-11-26，我先按 2026 年 10 月查，也试了 2026 年 4 月，两次都没有返回任何单据。\n2. **更关键的是**：`order_query` 的订单列表工具只支持按单号、状态、日期区间等条件列出单据，**不支持按“最后更新时间”筛选**。你要的「上个月更新过的」属于按更新时间的筛选，现有工具没有这个筛选项，所以即使有单子也筛不出来。\n\n如果「更新过」只是想找**某个时间段的单据**，可以告诉我具体是哪个月、什么状态（例如已确认）、什么单据类型（销售单、采购单还是生产单），我再按日期区间帮你列。如果想按“最后修改时间”筛，目前系统里查不到，需要人工在系统里导出。\n\n另外说明一下：本账号没有财务权限，金额、单价、应收应付这类信息我这边看不到；你问的单据时间筛选与权限无关，是工具本身不支持按更新时间筛选。",
+        "toolCalls": 2,
+        "answerChunks": 254,
+        "modelSteps": 3,
+        "runIds": [
+          "69251af9-a56f-420a-8ed8-24fd4207cc33"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-04",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "search_documents"
+        },
+        "question": "单号里带 0001 的销售订单有哪些"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-04",
+        "group": "gap",
+        "turns": [
+          "单号里带 0001 的销售订单有哪些"
+        ],
+        "sessionId": "85406b92-f795-4e9e-adc2-d5b34f4ba134",
+        "durationMs": 3053,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我以检索词「0001」在订单检索中查询，命中 **0 条**，没有查到任何单号里带 0001 的销售订单。\n\n建议你核对一下单号：可能单号不完整、记错了，或者该单据不在当前账号能查到的范围内。如果你能提供更完整的单号（例如销售单、采购单或生产单的完整编号），我可以再帮你查。",
+        "toolCalls": 1,
+        "answerChunks": 89,
+        "modelSteps": 2,
+        "runIds": [
+          "16432de5-f9f6-4e59-99bc-be65a7ffa1b3"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-05",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_order_overview"
+        },
+        "question": "MOCK-ORD-001 现在走到哪个环节了"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-05",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 现在走到哪个环节了"
+        ],
+        "sessionId": "322708c1-2046-43d3-b277-04496677775b",
+        "durationMs": 8960,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_timeline",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          }
+        ],
+        "answer": "按搜索结果，MOCK-ORD-001 对应销售单 MOCK-ORD-001（蓝色折叠伞，1000 个，交期 2026-09-20），关联采购单 MOCK-PO-001、生产单 MOCK-PROD-001。订单整体状态为 **blocked（存在阻塞）**，并没有正常往下走。\n\n**各环节进度（来自订单概览 get_order_overview）**\n| 环节 | 状态 | 关键数据 |\n|---|---|---|\n| 销售单 | confirmed 已确认 | BOM 已完成 |\n| 采购 | in_progress 进行中 | 采购单 MOCK-PO-001；订购 1200，到货 2 批共 1200，检验 2 批 1200，合格 1180、让步接收 10，入库 1180 |\n| 原材料库存 | in_progress 进行中 | 入库 1180、领用 300、退料 20、报废 0（该环节余额记录缺失，数量差 900） |\n| 生产 | in_progress 进行中 | 生产单 MOCK-PROD-001；计划 1000，工序完成量 1240 |\n| 成品质检 | completed 已完成 | 检验 1200，合格 410、让步接收 5、不合格 10，成品入库 410 |\n| 成品库存 | completed 已完成 | 入库单 MOCK-FG-IN-001 等；入库 410，库存 210，次品库存 5，出库 200 |\n| 发货 | completed 已完成 | 出库单 MOCK-FG-OUT-001，发货 200 |\n\n**阻塞原因（来自 get_order_status）**\n- 阻塞代码为 PRODUCTION_OVER_PLAN，也就是“工序完成量超过生产计划”；建议核对工序员工日报和超单确认。\n- 同时有一条高风险待处理预警（get_order_alerts）：生产日报差异（employee_operation_discrepancy），需核对日报与生产单累计数量。\n\n也就是说，这个订单流程大体上已经走到发货环节；发货 200，而订单数量是 1000；但整体状态被生产超计划和日报差异卡住，需要业务核对工序日报、处理超单后才能解开。\n\n需要我继续展开某一段（采购到货/质检、工序进度与报工、成品出入库明细）吗？",
+        "toolCalls": 5,
+        "answerChunks": 510,
+        "modelSteps": 3,
+        "runIds": [
+          "e7f90250-4618-41c0-88cd-d89d2af746b5"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-06",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_customer"
+        },
+        "question": "MOCK-ORD-001 的客户是谁"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-06",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 的客户是谁"
+        ],
+        "sessionId": "8fb46d4b-5ba7-4f42-85ad-83294c76e498",
+        "durationMs": 4793,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_customer"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 的客户是 **海风家居（模拟）**，客户编码 MOCK-C-001。\n\n该订单本身为销售订单「蓝色折叠伞」1000 个，状态 confirmed，交货日期 2026-09-20。来源：order_query 单号检索 + sales_query 客户查询。",
+        "toolCalls": 2,
+        "answerChunks": 71,
+        "modelSteps": 3,
+        "runIds": [
+          "1273e262-fe81-4bca-9ad1-bf57fdd6d768"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-07",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_finished_goods_outbounds"
+        },
+        "question": "MOCK-ORD-001 货发出去多少了"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-07",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 货发出去多少了"
+        ],
+        "sessionId": "35078cff-2838-45c7-9966-66ca9ea7c4be",
+        "durationMs": 6296,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_finished_goods_outbounds",
+          "get_finished_goods_inbounds"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_outbound",
+            "business_no": "MOCK-FG-OUT-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_outbound",
+            "business_no": "MOCK-FG-OUT-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          }
+        ],
+        "answer": "针对销售单 MOCK-ORD-001（蓝色折叠伞，订购 1000 个；销售订单和成品出入库两个单据的检索结果均已返回）：\n\n**已发货数量：200 个**\n- 成品出库单 MOCK-FG-OUT-001，状态「已签收」，出货日期 2026-08-26，数量 200。\n\n作为对照，成品入库情况如下：\n- 成品入库通知 MOCK-FGN-001：状态「部分入库」，通知数量 420。\n- 成品入库单 MOCK-FG-IN-001：状态「已过账」，数量 410（质检单 MOCK-FG-QC-REC-001）。\n\n也就是说，已入库 410 个、已发出 200 个，相对订单 1000 个还差较多未发出。\n\n如果你要看的是采购到货或生产进度，可以再说明一下，我按对应模块查。",
+        "toolCalls": 3,
+        "answerChunks": 195,
+        "modelSteps": 3,
+        "runIds": [
+          "e8ed50ad-2183-4443-82a5-1cab7756b57a"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-08",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_incoming_inspections"
+        },
+        "question": "MOCK-ORD-001 的来料质检都合格吗"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-08",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 的来料质检都合格吗"
+        ],
+        "sessionId": "a4ddd994-fba4-4c37-8cc1-9800dd9dff0e",
+        "durationMs": 5804,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "不是全部合格，有部分让步接收和不合格。\n\n订单 MOCK-ORD-001（蓝色折叠伞，1000 个）的来料质检共有 2 条记录：\n\n| 收货单号 | 检验数量 | 合格 | 让步接收 | 不合格 | 状态 |\n|---|---|---|---|---|---|\n| MOCK-REC-002 | 500 | 500 | 0 | 0 | passed |\n| MOCK-REC-001 | 700 | 680 | 10 | 10 | passed |\n\n- **MOCK-REC-002**：全部 500 个合格，没有让步接收和不合格。\n- **MOCK-REC-001**：检验 700 个，其中 680 个合格、10 个让步接收、10 个不合格。不过整单状态仍显示为 passed。\n\n数据来源：订单检索结果与来料质检记录（MOCK-REC-001、MOCK-REC-002）。质检记录中的 qc_result 字段为空，因此上面表中的结果是我依据各数量的明细判断的。",
+        "toolCalls": 2,
+        "answerChunks": 224,
+        "modelSteps": 3,
+        "runIds": [
+          "62d87a7c-a35e-47e5-9524-730174a9abe1"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-09",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_bom"
+        },
+        "question": "MOCK-ORD-001 用了哪些物料、各要多少"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-09",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 用了哪些物料、各要多少"
+        ],
+        "sessionId": "4b76a666-fd16-41a8-8c9b-77af60f34ffd",
+        "durationMs": 6471,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_bom"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，数量 1000 个）的 BOM（物料清单，版本 v1，已发布）列出的物料及单件用量如下：\n\n| 物料 | 单件用量 | 单位 |\n|---|---|---|\n| 伞布-蓝色（模拟） | 1.2 | 码 |\n| 伞骨-铝合金（模拟） | 1 | 个 |\n| 包装袋（模拟） | 1 | 个 |\n\n按 1000 个成品推算，需要伞布 1200 码、伞骨 1000 个、包装袋 1000 个。\n\n说明：以上是销售单 MOCK-ORD-001 的 BOM 中列出的单件用量，以及按订单数量推算的总量；实际领用和库存情况，需要查询 warehouse_query 的领退料和物料余额数据才能确认。",
+        "toolCalls": 2,
+        "answerChunks": 193,
+        "modelSteps": 3,
+        "runIds": [
+          "f84b7d9b-f8d5-47c3-8c26-c4619cf4519a"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-10",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_operation_progress"
+        },
+        "question": "MOCK-ORD-001 每道工序做完了多少"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "decoy-10",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 每道工序做完了多少"
+        ],
+        "sessionId": "e8a4ec6e-3234-44bd-abb3-2283da6bfb35",
+        "durationMs": 5841,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_operation_progress"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个）对应的生产单是 **MOCK-PROD-001**，各工序进度如下（数据来源：生产单 MOCK-PROD-001 的工序进度）：\n\n| 工序 | 计划数量 | 已完成数量 | 完成率 | 状态 |\n|---|---|---|---|---|\n| 1 裁剪（模拟） | 1000 | 420 | 42% | 进行中 |\n| 2 缝制（模拟） | 1000 | 400 | 40% | 进行中 |\n| 3 包装（模拟） | 1000 | 420 | 42% | 进行中 |\n\n三道工序均在进行中，完成率在 40%–42% 之间。\n\n说明：单号 MOCK-ORD-001 是通过单号检索得到，检索结果显示该订单状态为 confirmed，交期为 2026-09-20；生产单号 MOCK-PROD-001 就是该订单关联的生产单。",
+        "toolCalls": 2,
+        "answerChunks": 219,
+        "modelSteps": 3,
+        "runIds": [
+          "6d97e662-8601-41b1-95c7-3075c5ee8c5f"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-01",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_payables"
+        },
+        "question": "按供应商汇总本月采购金额"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-01",
+        "group": "gap",
+        "turns": [
+          "按供应商汇总本月采购金额"
+        ],
+        "sessionId": "ecc0e437-b282-410f-81e2-0ae1fbee05e4",
+        "durationMs": 2828,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "按供应商汇总本月采购金额，这个我无法回答：本账号没有财务权限，采购金额、供应商维度的金额汇总都属于财务数据，系统里有但当前账号看不到，需要财务权限的账号才能查询。\n\n如果你的问题是数量或到货情况（比如本月各供应商的到货批次、超期到货），我可以用采购模块帮你查。",
+        "toolCalls": 0,
+        "answerChunks": 74,
+        "modelSteps": 1,
+        "runIds": [
+          "4fca759b-186a-4fb2-aab4-006b02278177"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-02",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_documents"
+        },
+        "question": "最近六个月每月的销售订单数量趋势"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-02",
+        "group": "gap",
+        "turns": [
+          "最近六个月每月的销售订单数量趋势"
+        ],
+        "sessionId": "e762d0ce-0f65-4434-849a-bb0d00c11df4",
+        "durationMs": 5825,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_documents",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "这个问题目前无法回答。现有工具（order_query 的 list_documents）只能返回订单明细列表，不支持按自然月分组聚合的销售订单数量时间序列。\n\n补充说明几个事实：\n- 我在 list_documents 里查到的订单只有两张：MOCK-ORD-002（黑色直柄伞，600 个，draft，下单日 2026-08-21）、MOCK-ORD-001（蓝色折叠伞，1000 个，confirmed，下单日 2026-08-20）。其中“下单日”这个字段本身也只是返回列表里带的属性，不能做按月汇总。\n- 我没有“每月的销售订单数量”这类统计口径的数据来源，因此不能给出近六个月的月度趋势，也不会编造数字。\n\n我已把这一缺口（缺少按月时间序列统计）记录为需求。如果你能提供具体订单号，我可以逐单查全链路；或者如果系统里另有报表类工具/账号权限，可以走那边看趋势。",
+        "toolCalls": 1,
+        "answerChunks": 208,
+        "modelSteps": 2,
+        "runIds": [
+          "5b33e751-e86b-45b5-9795-e481f34c2738"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_documents",
+            "missing": "time_series"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-03",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_low_stock_materials"
+        },
+        "question": "各个仓库的原料库存分别是多少"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-03",
+        "group": "gap",
+        "turns": [
+          "各个仓库的原料库存分别是多少"
+        ],
+        "sessionId": "6359f4dd-4862-4376-8ca7-60ab035c7ec2",
+        "durationMs": 5334,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "目前无法按仓库给出原料库存分布。\n\n原因：库存模块里能查原料库存的只有「某张订单 BOM 里的物料当前实存量」（get_raw_material_balance），它有两个限制正好卡住这个问题：\n\n- 必须指定单据根（某张订单），不能脱离订单查全量原料；\n- 实存量是全局口径，不区分仓库，也不按仓库分组。\n\n其余库存 operation 都是围绕单个订单的流水、领退料、成品质检与出入库，同样没有「按仓库汇总的库存余额」这种查询。list_low_stock_materials 只按物料与单位聚合、看净库存是否≤0，也不分仓库。\n\n我已把「缺少按仓库维度的库存余额查询」这个缺口记录下来。如果你能提供具体订单号，我可以查那张订单 BOM 里各原料的全局实存量（同样不含仓库拆分）。",
+        "toolCalls": 0,
+        "answerChunks": 188,
+        "modelSteps": 3,
+        "runIds": [
+          "0683b2ca-1629-452f-b977-abf87f3b6870"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_raw_material_balance",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-04",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_receivables"
+        },
+        "question": "本月所有订单的应收账款总额是多少"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-04",
+        "group": "gap",
+        "turns": [
+          "本月所有订单的应收账款总额是多少"
+        ],
+        "sessionId": "4f6b3e4a-3d14-4bc8-af1e-12ca954e04f5",
+        "durationMs": 1990,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "当前账号没有财务权限，金额、单价、应收应付这类数据都看不到，需要财务权限的账号才能查。",
+        "toolCalls": 0,
+        "answerChunks": 25,
+        "modelSteps": 1,
+        "runIds": [
+          "b51b5ffa-7e55-482f-842f-629d78d20297"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-05",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_documents"
+        },
+        "question": "每个客户累计下了多少张订单"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-05",
+        "group": "gap",
+        "turns": [
+          "每个客户累计下了多少张订单"
+        ],
+        "sessionId": "f186aa59-02d6-4dba-851d-8a8494a76a6d",
+        "durationMs": 6414,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个需求我目前答不了。\n\n我查了可用的能力：订单模块里能按客户筛选列出销售单（`list_documents`，可按 `customer_q` 查询），销售模块能查“某一张订单属于哪个客户”（`get_customer`）。但两者都**不能按客户分组统计张数**：`list_documents` 明确不分组、不计数，每页只返回 20 行明细；也没有客户维度的汇总接口。所以“每个客户累计下了多少张订单”这个按客户聚合的计数，现有工具做不出来，我已把这一缺口（缺按客户分组计数）登记上去了。\n\n可以替代的做法：\n- 你指定某个客户名称，我用 `list_documents` 把该客户的销售单逐页列出来，再人工数张数（客户很多时会比较费时）；\n- 或者你给我具体单号，我查这张订单的客户与全链路信息。\n\n需要我按某个客户先列一下吗？",
+        "toolCalls": 0,
+        "answerChunks": 209,
+        "modelSteps": 3,
+        "runIds": [
+          "1a53d33b-877e-4550-a99e-47ba75f7f95a"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_documents",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-06",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_payroll"
+        },
+        "question": "每个员工本月报工总量排名"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-06",
+        "group": "gap",
+        "turns": [
+          "每个员工本月报工总量排名"
+        ],
+        "sessionId": "42042a8e-ed0b-48da-a2f4-189117ca5a6b",
+        "durationMs": 4587,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个目前无法回答。\n\n原因：生产模块只有按订单查生产单、工序进度、报工明细、外加工流转的查询，没有“以员工为主体”的报工汇总，也没有按员工分组、按月度累加并排名的报表能力。另外，本账号没有财务权限，员工工价、工资相关数据也看不到。\n\n如果你需要看某个生产单的报工明细和工序进度，把单号告诉我，我可以按单查出来。",
+        "toolCalls": 0,
+        "answerChunks": 98,
+        "modelSteps": 2,
+        "runIds": [
+          "a07feeb3-1589-47f9-8abd-55353e07c02a"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_operation_reports",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-07",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_overdue_arrivals"
+        },
+        "question": "哪些供应商的采购单延期最多"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-07",
+        "group": "gap",
+        "turns": [
+          "哪些供应商的采购单延期最多"
+        ],
+        "sessionId": "200c9374-e548-45d5-bdae-41197b0083da",
+        "durationMs": 6080,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个问题目前无法回答。\n\n现有采购模块里最接近的是「采购到货超期清单」（list_overdue_arrivals），它会列出每张超期采购单的采购单号、所属销售单号、状态、预计到货日、超期天数、供应商，但它的边界明确写着「不按供应商分组汇总」，且没有汇总类工具。因此我没有办法统计出「哪些供应商延期最多」这样的排名或聚合结果。\n\n如果你想看具体情况，我可以改为帮你逐页拉出全部超期采购单明细（每页 20 行），由你自己按供应商归并统计。需要的话告诉我。",
+        "toolCalls": 0,
+        "answerChunks": 129,
+        "modelSteps": 3,
+        "runIds": [
+          "75ccb1ce-6cad-4e76-b886-957fda8cdc7a"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_overdue_arrivals",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-08",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_finished_goods_outbounds"
+        },
+        "question": "这个月和上个月的成品出库数量对比"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-08",
+        "group": "gap",
+        "turns": [
+          "这个月和上个月的成品出库数量对比"
+        ],
+        "sessionId": "867a6569-b9ce-460d-abdb-b75107cad91f",
+        "durationMs": 5443,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个目前查不了。\n\n原因：库存模块里与成品出库最接近的是 `get_finished_goods_outbounds`（查某张订单的成品出库与发货情况），它只能按**单张订单**返回出库明细，无法按月份跨订单汇总出库数量，所以做不到“本月 vs 上月”的数量对比。\n\n我已把这个缺口（缺少按月份分组汇总的出库数量统计）记录下来。如果你有具体的订单号，我可以逐单帮你查出库明细，你再自行对比；或者你告诉我需要查哪些订单，我批量查。",
+        "toolCalls": 0,
+        "answerChunks": 119,
+        "modelSteps": 3,
+        "runIds": [
+          "0006f77a-4f2f-49d5-96d3-10d5ed7c18ea"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_finished_goods_outbounds",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-09",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_cost_profit"
+        },
+        "question": "管理费用科目本月发生额是多少"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-09",
+        "group": "gap",
+        "turns": [
+          "管理费用科目本月发生额是多少"
+        ],
+        "sessionId": "b55a08a3-9a7b-4f43-8bf2-edf0de245386",
+        "durationMs": 2632,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "管理费用科目本月发生额属于财务数据（金额类），当前账号没有财务权限，查不到这个数字，需要用有财务权限的账号查询。\n\n如果你还需要查订单、采购、生产、库存方面的信息，我可以帮你查。",
+        "toolCalls": 0,
+        "answerChunks": 48,
+        "modelSteps": 1,
+        "runIds": [
+          "7f258133-118f-4c89-89d6-bae74c85d4f1"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-10",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_cost_profit"
+        },
+        "question": "全公司各订单的毛利排名"
+      },
+      "rep": 2,
+      "outcome": {
+        "id": "gap-10",
+        "group": "gap",
+        "turns": [
+          "全公司各订单的毛利排名"
+        ],
+        "sessionId": "873a6232-6799-47b4-b9c6-5d7a772e84e4",
+        "durationMs": 3480,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个问题我无法回答：本账号没有财务权限，毛利、成本利润这类数据看不到，需要财务权限的账号才能查。也不要用现有业务查询工具去凑，那只会给出不可靠的结论。\n\n如果你需要，我可以用现有权限帮你查这些非财务维度的内容：\n- 各订单的基础信息与全链路进度（order_query）\n- 某订单的销售单、客户、BOM、退货（sales_query）\n- 采购计划、到货、到货超期情况（procurement_query）\n- 生产单、工序进度、报工（production_query）\n- 物料库存余额、库存不足物料（warehouse_query）\n\n需要哪一块直接说。",
+        "toolCalls": 0,
+        "answerChunks": 144,
+        "modelSteps": 1,
+        "runIds": [
+          "e4a9c46f-80a5-4488-84ab-6a904174029c"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-01",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_overdue_arrivals"
+        },
+        "question": "有哪些采购单已经过了预计到货日还没到齐"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-01",
+        "group": "gap",
+        "turns": [
+          "有哪些采购单已经过了预计到货日还没到齐"
+        ],
+        "sessionId": "eed09fc3-382c-40ac-bc2e-65d6b421519d",
+        "durationMs": 4293,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_overdue_arrivals"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          }
+        ],
+        "answer": "按系统时间 2026-11-26 统计，有 2 张采购单已过预计到货日且未到齐：\n\n| 采购单号 | 关联订单 | 供应商 | 预计到货日 | 超期天数 | 状态 |\n|---|---|---|---|---|---|\n| MOCK-PO-001 | MOCK-ORD-001 | 宁波伞布供应商（模拟） | 2026-08-28 | 90 天 | 部分到货（partially_arrived） |\n| MOCK-PO-002 | MOCK-ORD-002 | 苏州加工点（模拟） | 2026-09-01 | 86 天 | 已下单未到货（ordered） |\n\n判定口径：预计到货日早于今天，且采购单状态不是“全部到货”或“已取消”。\n\n说明：这两条单号为系统中的模拟（MOCK）数据。如需看某张采购单的具体明细、到货记录或来料质检情况，请告诉我要查哪个订单，我按订单查采购链路。",
+        "toolCalls": 1,
+        "answerChunks": 228,
+        "modelSteps": 2,
+        "runIds": [
+          "f41edef3-0506-4092-97ad-15539cff215c"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-02",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_low_stock_materials"
+        },
+        "question": "仓库里什么料快没了"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-02",
+        "group": "gap",
+        "turns": [
+          "仓库里什么料快没了"
+        ],
+        "sessionId": "6342e6ba-5978-4032-bf6c-8c136ba548f0",
+        "durationMs": 3737,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_low_stock_materials"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "查询结果：截至 2026-11-26，库存不足（低于安全库存/接近用尽）的物料清单为空，也就是当前没有触发\"库存不足\"预警的物料。\n\n说明：这次返回的是空列表，数据来源为 warehouse_query 的物料库存不足查询。如果您想核对某个具体物料或某张订单的物料余额，可以给我单号，我帮您查明细。",
+        "toolCalls": 1,
+        "answerChunks": 85,
+        "modelSteps": 2,
+        "runIds": [
+          "aa9a910a-3def-41f8-bf22-859ca29cd26c"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-03",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "list_documents"
+        },
+        "question": "上个月更新过的、已确认的单子列一下"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-03",
+        "group": "gap",
+        "turns": [
+          "上个月更新过的、已确认的单子列一下"
+        ],
+        "sessionId": "c659b544-11f6-4586-8bc5-883fbc914b8d",
+        "durationMs": 6626,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "list_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "没查到符合条件的单据。\n\n说明一下情况：\n\n1. 我按「状态=已确认（confirmed）」查询订单列表，工具只返回了 1 条：MOCK-ORD-001（蓝色折叠伞，1000 个，客户海风家居（模拟）），订单日期 2026-08-20，交期 2026-09-20。\n2. 我又按「已确认 + 上个月（2026-10-01 至 2026-10-31）」这个条件查了一次，结果为空。\n3. 关键在于：`list_documents` 只支持按状态筛选，工具返回的字段里没有「更新时间」「最后修改时间」这类字段，也没有按更新时间筛选的参数。所以你真正想要的「上个月更新过的」这个条件，我这边无法直接判断——上面那次按时间段查的尝试只是近似，并不等于「更新时间落在 10 月」，结果也不能作为结论。\n\n另外，当前系统时间显示为 2026-11-26，所以「上个月」应理解为 2026 年 10 月。\n\n如果你需要精确找出「上个月被更新过」的已确认单据，建议：\n- 提供具体单号，我可以用 `search_documents` 加全链路查询，核对它的状态和流转记录；\n- 或者如果贵系统里订单有「最后更新时间」字段，需要开通/开放该字段的查询能力才能筛。",
+        "toolCalls": 2,
+        "answerChunks": 302,
+        "modelSteps": 3,
+        "runIds": [
+          "0509d709-a801-4609-b07c-46459a0ab7dd"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-04",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "search_documents"
+        },
+        "question": "单号里带 0001 的销售订单有哪些"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-04",
+        "group": "gap",
+        "turns": [
+          "单号里带 0001 的销售订单有哪些"
+        ],
+        "sessionId": "5ca62619-f031-4cb8-b226-0e563ae20e28",
+        "durationMs": 3268,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我用检索词「0001」在订单模块里做了单号检索，返回结果是 0 条，没有命中任何销售订单或其它单据。\n\n因此目前无法列出“单号里带 0001”的销售订单。建议你核对一下单号：可能是完整单号、前后缀或位数记错了。你可以把确认后的完整单号或其中一段更准确的线索告诉我，我再帮你检索。",
+        "toolCalls": 1,
+        "answerChunks": 87,
+        "modelSteps": 2,
+        "runIds": [
+          "97d50fad-80de-48ed-8c71-d2b10ebc5f77"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-05",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_order_overview"
+        },
+        "question": "MOCK-ORD-001 现在走到哪个环节了"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-05",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 现在走到哪个环节了"
+        ],
+        "sessionId": "566f0936-a024-464d-975f-bde6ffd381bb",
+        "durationMs": 5671,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_operation_progress",
+          "get_purchase_orders"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"warehouse_query\">\n<｜｜DSML｜｜ parameter name=\"operation\" string=\"true\">get_finished_goods_inbound</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"order_ref\" string=\"true\">o_1</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+        "toolCalls": 4,
+        "answerChunks": 63,
+        "modelSteps": 3,
+        "runIds": [
+          "6fde6ce4-ced3-4a92-9845-107cbfb730d0"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-06",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_customer"
+        },
+        "question": "MOCK-ORD-001 的客户是谁"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-06",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 的客户是谁"
+        ],
+        "sessionId": "f7663043-c942-4c2d-95ea-0486e0eaed2b",
+        "durationMs": 4147,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_customer"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 的客户是**海风家居（模拟）**，客户编码 MOCK-C-001。\n\n说明：该订单在销售单据检索结果中对应销售订单 MOCK-ORD-001（产品：蓝色折叠伞，数量 1000 个，状态：已确认），客户信息来自该销售订单的客户档案。",
+        "toolCalls": 2,
+        "answerChunks": 75,
+        "modelSteps": 3,
+        "runIds": [
+          "3b54f446-7b88-4613-9ca5-deab5c77a01f"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-07",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_finished_goods_outbounds"
+        },
+        "question": "MOCK-ORD-001 货发出去多少了"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-07",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 货发出去多少了"
+        ],
+        "sessionId": "98b599f7-7289-4406-aeec-14b862686714",
+        "durationMs": 6656,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_finished_goods_outbounds",
+          "get_finished_goods_inbounds"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_outbound",
+            "business_no": "MOCK-FG-OUT-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_outbound",
+            "business_no": "MOCK-FG-OUT-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，订单数量 1000 个）的发货情况如下：\n\n**已完成发货（出库单 MOCK-FG-OUT-001）**\n- 出库数量：200 个\n- 状态：已签收（signed）\n- 发货日期：2026-08-26\n\n**对比入库情况（入库单 MOCK-FG-IN-001、入库通知 MOCK-FGN-001）**\n- 成品入库：410 个（已过账，质检单 MOCK-FG-QC-REC-001）\n- 入库通知单：420 个，状态为部分入库（批次 MOCK-B1）\n\n也就是说，到目前为止成品只发出 200 个，而订单总数为 1000 个；成品已入库 410 个，因此还有相当一部分成品没有发出。订单交期为 2026-09-20。\n\n以上数字分别来自出库单 MOCK-FG-OUT-001 和入库单 MOCK-FG-IN-001 / 入库通知 MOCK-FGN-001。",
+        "toolCalls": 3,
+        "answerChunks": 231,
+        "modelSteps": 3,
+        "runIds": [
+          "764edf4e-3518-4368-8f07-c5de1f129a14"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-08",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_incoming_inspections"
+        },
+        "question": "MOCK-ORD-001 的来料质检都合格吗"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-08",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 的来料质检都合格吗"
+        ],
+        "sessionId": "b92baee6-b78e-45d6-877a-d1b2d5c36a79",
+        "durationMs": 5843,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "不全部合格。MOCK-ORD-001（蓝色折叠伞 1000 个，销售单）对应的两笔来料质检结果如下：\n\n| 收货单 | 检验数量 | 合格 | 让步接收 | 不合格 | 状态 |\n|---|---|---|---|---|---|\n| MOCK-REC-001 | 700 | 680 | 10 | 10 | passed |\n| MOCK-REC-002 | 500 | 500 | 0 | 0 | passed |\n\n- MOCK-REC-002：全部合格（500/500）。\n- MOCK-REC-001：有 10 个不合格、10 个让步接收，合格 680 个。\n\n来源：两张来料质检单（MOCK-REC-001、MOCK-REC-002）的质检数据。注意两条记录的 `qc_result` 字段为空，实际结果以“合格、让步接收、不合格”的数量为准。",
+        "toolCalls": 2,
+        "answerChunks": 195,
+        "modelSteps": 3,
+        "runIds": [
+          "1fb3625a-14be-4b23-a197-d5e34bd70ce4"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-09",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_bom"
+        },
+        "question": "MOCK-ORD-001 用了哪些物料、各要多少"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-09",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 用了哪些物料、各要多少"
+        ],
+        "sessionId": "d44f5975-e0c2-4d9a-b8bc-49535cf7133d",
+        "durationMs": 5588,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_bom"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个，销售单状态 confirmed）的 BOM（第 1 版，已发布）物料如下：\n\n| 物料名称 | 单件用量 | 单位 |\n|---|---|---|\n| 伞布-蓝色（模拟） | 1.2 | 码 |\n| 伞骨-铝合金（模拟） | 1 | 个 |\n| 包装袋（模拟） | 1 | 个 |\n\n说明：以上用量是 BOM 中每件产品的单位用量，数据来自 sales_query 的 BOM 查询结果。若要折算这 1000 个订单需用的总量，系统未直接给出总用量，需按单件用量 × 1000 自行换算；此外若有损耗或额外领用，应以仓库领料记录为准。",
+        "toolCalls": 2,
+        "answerChunks": 176,
+        "modelSteps": 3,
+        "runIds": [
+          "6168a656-c03d-4612-b7ea-1f2aede60a93"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "decoy-10",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "decoy",
+          "nearest": "get_operation_progress"
+        },
+        "question": "MOCK-ORD-001 每道工序做完了多少"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "decoy-10",
+        "group": "gap",
+        "turns": [
+          "MOCK-ORD-001 每道工序做完了多少"
+        ],
+        "sessionId": "9ccec732-de72-4eeb-96d4-d2369d0af395",
+        "durationMs": 5882,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_operation_progress"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个）对应生产单 **MOCK-PROD-001**，各工序完成情况如下（来源：生产单 MOCK-PROD-001 的工序进度）：\n\n| 工序 | 计划数量 | 已完成 | 完成率 | 状态 |\n|---|---|---|---|---|\n| 1. 裁剪（模拟） | 1000 | 420 | 42% | 进行中 |\n| 2. 缝制（模拟） | 1000 | 400 | 40% | 进行中 |\n| 3. 包装（模拟） | 1000 | 420 | 42% | 进行中 |\n\n三道工序均处于进行中，尚未完工。",
+        "toolCalls": 2,
+        "answerChunks": 159,
+        "modelSteps": 3,
+        "runIds": [
+          "1e37b392-4fdb-4c28-9059-b6acaef03165"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-01",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_payables"
+        },
+        "question": "按供应商汇总本月采购金额"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-01",
+        "group": "gap",
+        "turns": [
+          "按供应商汇总本月采购金额"
+        ],
+        "sessionId": "19c13e92-9c66-4843-847e-cd3fa4b56928",
+        "durationMs": 3507,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "抱歉，这个需求我没法完成：本账号没有财务权限，看不到采购金额、单价等数据，需要财务权限的账号才能查询。\n\n另外，采购模块本身也不支持按供应商汇总（该模块只能查某订单的采购计划、采购单、到货、来料质检，以及哪些采购到货超期）。所以即使有财务权限，我这边也没有工具能直接给出“按供应商汇总本月采购金额”的结果。",
+        "toolCalls": 0,
+        "answerChunks": 92,
+        "modelSteps": 1,
+        "runIds": [
+          "4f5818d9-46d6-44bc-9232-73bce61a88b6"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-02",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_documents"
+        },
+        "question": "最近六个月每月的销售订单数量趋势"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-02",
+        "group": "gap",
+        "turns": [
+          "最近六个月每月的销售订单数量趋势"
+        ],
+        "sessionId": "a3cf46f9-a953-439d-b34a-d59913d1b127",
+        "durationMs": 5821,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "目前无法回答「最近六个月每月销售订单数量」这个趋势问题。\n\n原因：订单模块能列销售单的只有 `list_documents`，它按更新日期区间筛出明细行（单号、产品、数量、状态、客户、下单日期、交货日期），明确不分组、不计数，分页每页 20 行；也不支持按「下单日期」做月度聚合。所以拿不到「每月销售单数量」的按月计数序列。\n\n替代办法（手工口径，仅供参考）：如果你能接受按更新日期筛选，我可以用 `list_documents` 分页把某个时间窗内的销售单明细逐条列出来，你自己按月份数条数——但这既不是下单日期口径，也可能因分页遗漏，不是真正的趋势统计。需要的话告诉我时间范围和是否需要限定状态。\n\n另外提示：金额类指标（订单金额等）本账号没有财务权限，即使有统计工具也看不到。",
+        "toolCalls": 0,
+        "answerChunks": 196,
+        "modelSteps": 3,
+        "runIds": [
+          "35b07546-8dd8-4d34-8460-d0988721ed59"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_documents",
+            "missing": "time_series"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-03",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_low_stock_materials"
+        },
+        "question": "各个仓库的原料库存分别是多少"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-03",
+        "group": "gap",
+        "turns": [
+          "各个仓库的原料库存分别是多少"
+        ],
+        "sessionId": "6d1efde3-53d6-4d5d-a4fb-86a409ecc68c",
+        "durationMs": 5838,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "get_raw_material_balance",
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [
+          "ORDER_SEARCH_REQUIRED"
+        ],
+        "sources": [],
+        "answer": "这个问题目前查不了。\n\n原因是：库存模块里最接近的是「某张订单 BOM 内物料的当前实存量」，它有两个限制——必须指定一张具体单据，而且结果是全局口径的实存量，不按仓库拆开。另一个「哪些原料库存不足」也只能按物料汇总，同样没有仓库维度。所以拿不到「各仓库分别有多少原料库存」这种按仓库分组的库存数据。\n\n如果你需要，我可以换个角度帮你查，比如：\n- 告诉我某个具体订单号，我查这张订单 BOM 里物料目前的实存量；\n- 或者查「哪些原料库存不足」（净库存 ≤ 0 的物料，按物料汇总）。",
+        "toolCalls": 0,
+        "answerChunks": 142,
+        "modelSteps": 3,
+        "runIds": [
+          "f6dea049-4507-415a-8db6-92bd0ee64dd7"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_raw_material_balance",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-04",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_receivables"
+        },
+        "question": "本月所有订单的应收账款总额是多少"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-04",
+        "group": "gap",
+        "turns": [
+          "本月所有订单的应收账款总额是多少"
+        ],
+        "sessionId": "885a5c95-dc5e-4f00-bb30-519c64ec3cd7",
+        "durationMs": 2188,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "你的问题是本月所有订单的应收账款总额。这个数据需要财务权限才能查看，当前账号没有财务权限，所以我看不到应收账款金额。如需查询，请使用具备财务权限的账号，或联系财务部门。",
+        "toolCalls": 0,
+        "answerChunks": 45,
+        "modelSteps": 1,
+        "runIds": [
+          "ec0c3b42-2e33-43dc-a020-19ed0c15d2ec"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-05",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_documents"
+        },
+        "question": "每个客户累计下了多少张订单"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-05",
+        "group": "gap",
+        "turns": [
+          "每个客户累计下了多少张订单"
+        ],
+        "sessionId": "ab3523bb-bb9a-4e9f-aceb-9b0ec57535b4",
+        "durationMs": 6081,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个问题目前无法回答。原因如下：\n\n- 现有工具里最接近的是订单模块的 `list_documents`，它可以按客户关键字筛选并逐条列出销售单，带有客户名，并且每页 20 条；但它**不分组、不计数**，没有“按客户汇总订单张数”的能力。\n- 销售模块只有按单张订单查询的接口，返回的客户信息只是单个订单所属客户的编码与名称，也不是客户维度的汇总。\n\n也就是说，缺少的是“按客户分组计数”这类聚合统计能力；我可以帮你逐页列出所有销售单，你再自行统计，但这并不能直接给出“每个客户累计下单张数”的汇总结果。若需要这个汇总，得通过其他方式实现。",
+        "toolCalls": 0,
+        "answerChunks": 156,
+        "modelSteps": 3,
+        "runIds": [
+          "d1e19716-4924-4bd1-ba9f-3bae7d0eea9f"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "list_documents",
+            "missing": "group_by"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-06",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_payroll"
+        },
+        "question": "每个员工本月报工总量排名"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-06",
+        "group": "gap",
+        "turns": [
+          "每个员工本月报工总量排名"
+        ],
+        "sessionId": "bc7a306b-650e-495e-9956-75b49b3c8af6",
+        "durationMs": 6088,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "目前无法回答“每个员工本月报工总量排名”。\n\n原因：生产模块的报工查询（get_operation_reports）只能按单张订单查询，返回的行只有生产单号、工序名称、报工日期、完成数量、单位，**不含员工字段**，也不支持跨订单按员工汇总的排名统计。\n\n也就是说，缺少“员工”维度以及跨单汇总的口径，所以做不了这个排名。我已经把这个缺口记录下来。\n\n如果你需要，我可以这样帮你：\n- 告诉我具体订单号，我查该订单每天的报工明细（数量、日期、工序）；\n- 或者按订单查各工序累计完成情况（get_operation_progress）。",
+        "toolCalls": 0,
+        "answerChunks": 142,
+        "modelSteps": 3,
+        "runIds": [
+          "83355e56-16c6-4f24-9185-fc56e90585fb"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_operation_reports",
+            "missing": "object"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-07",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "list_overdue_arrivals"
+        },
+        "question": "哪些供应商的采购单延期最多"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-07",
+        "group": "gap",
+        "turns": [
+          "哪些供应商的采购单延期最多"
+        ],
+        "sessionId": "7baebb88-24a8-437f-88ef-e3572e63e683",
+        "durationMs": 7526,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "list_overdue_arrivals"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-002"
+          }
+        ],
+        "answer": "目前工具只能列出**到货超期的采购单明细**，不能按供应商分组汇总“延期最多的供应商”。先把现有的超期采购单列出来（截至 2026-11-26）：\n\n| 采购单号 | 所属销售单 | 状态 | 预计到货日 | 超期天数 | 供应商 |\n|---|---|---|---|---|---|\n| MOCK-PO-001 | MOCK-ORD-001 | 部分到货 | 2026-08-28 | 90 天 | 宁波伞布供应商（模拟） |\n| MOCK-PO-002 | MOCK-ORD-002 | 已下单 | 2026-09-01 | 86 天 | 苏州加工点（模拟） |\n\n从这两条看，宁波伞布供应商超期 90 天、苏州加工点超期 86 天，两者各有一张超期采购单；这只是本次查到的两行数据，不能据此得出“哪家供应商整体延期最多”。\n\n要回答“按供应商排名延期次数或延期天数”，需要按供应商分组汇总的采购工具，而现有 procurement_query 的 list_overdue_arrivals 明确不支持按供应商汇总。如果你需要，我可以按具体订单逐个查采购单和到货情况，帮你人工汇总。",
+        "toolCalls": 1,
+        "answerChunks": 269,
+        "modelSteps": 3,
+        "runIds": [
+          "63a774b6-5422-4d3b-8d8b-cc1ec8318d6e"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-08",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_finished_goods_outbounds"
+        },
+        "question": "这个月和上个月的成品出库数量对比"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-08",
+        "group": "gap",
+        "turns": [
+          "这个月和上个月的成品出库数量对比"
+        ],
+        "sessionId": "c6d14b90-393d-466c-bf30-89bbd5df5a1f",
+        "durationMs": 5273,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "describe_module",
+          "declare_gap"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个需求我目前没法直接回答。\n\n原因：库存模块里唯一能查成品出库的操",
+        "toolCalls": 0,
+        "answerChunks": 21,
+        "modelSteps": 3,
+        "runIds": [
+          "e77dd896-2070-4a7c-a1ec-5906e22e6daf"
+        ],
+        "gapDeclarations": [
+          {
+            "nearest_operation": "get_finished_goods_outbounds",
+            "missing": "time_series"
+          }
+        ]
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-09",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_cost_profit"
+        },
+        "question": "管理费用科目本月发生额是多少"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-09",
+        "group": "gap",
+        "turns": [
+          "管理费用科目本月发生额是多少"
+        ],
+        "sessionId": "131d5580-0bf8-44c6-96a3-ea9293c622e2",
+        "durationMs": 2710,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "管理费用科目本月发生额属于财务数据（金额类），我这边没有财务权限，查不了。需要用到财务权限的账号才能看这类科目发生额。",
+        "toolCalls": 0,
+        "answerChunks": 34,
+        "modelSteps": 1,
+        "runIds": [
+          "02b4834b-295e-4f8c-8931-ff63d2d89774"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "gap-10",
+        "group": "gap",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ]
+        },
+        "gap": {
+          "class": "gap",
+          "nearest": "get_order_cost_profit"
+        },
+        "question": "全公司各订单的毛利排名"
+      },
+      "rep": 3,
+      "outcome": {
+        "id": "gap-10",
+        "group": "gap",
+        "turns": [
+          "全公司各订单的毛利排名"
+        ],
+        "sessionId": "d5e4d779-be13-478d-85a7-d85a7f84b75f",
+        "durationMs": 2227,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "这个我无法回答：毛利数据需要财务权限，当前账号没有财务权限，看不到金额、成本、利润这类数据，需要用具备财务权限的账号查询。\n\n我能帮您查的是与订单相关的非财务信息，比如各订单的销售单、采购到货、生产进度、库存情况等，需要的话可以告诉我。",
+        "toolCalls": 0,
+        "answerChunks": 69,
+        "modelSteps": 1,
+        "runIds": [
+          "505d1355-4477-466a-a5c9-e370a39375e9"
+        ],
+        "gapDeclarations": []
+      },
+      "missing": []
+    }
+  ]
+}
