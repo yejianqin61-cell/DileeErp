@@ -10,10 +10,13 @@ const GAP_HINT = "如果现有工具确实答不了用户的问题，调用 repo
 
 const NEAREST_HINT = "判断缺口时：先在上面的模块里找最接近用户问题的 operation，再说它差什么（分组、筛选、度量、时间序列，或现有工具都不以该对象为主体）。";
 
+const PERMISSION_HINT = "当前账号没有财务权限：金额、单价、应收应付、收付款、对账、成本利润、工资这些数据系统里有，但本账号看不到。用户问到时直接说明没有权限、需要财务权限的账号，不要说系统查不到或没有这个功能，也不要调用 report_gap。";
+
 export function buildBaseSystemPrompt(accessLevel: AgentAccessLevel): string {
   return `${PREFIX}\n\n${renderL1(accessLevel)}\n${CATALOG_HINT}`;
 }
 
 export function buildSystemPrompt(accessLevel: AgentAccessLevel): string {
-  return `${buildBaseSystemPrompt(accessLevel)}\n\n${GAP_HINT}\n\n${NEAREST_HINT}`;
+  const prompt = `${buildBaseSystemPrompt(accessLevel)}\n\n${GAP_HINT}\n\n${NEAREST_HINT}`;
+  return accessLevel === "full" ? prompt : `${prompt}\n\n${PERMISSION_HINT}`;
 }

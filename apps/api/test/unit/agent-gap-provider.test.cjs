@@ -49,3 +49,12 @@ test("系统指令在原内容后追加两段缺口提示", () => {
     assert.equal(base.includes(sentence), false, sentence);
   }
 });
+
+test("普通档位系统指令说清没有权限，财务档位没有这一段", () => {
+  const hint = "当前账号没有财务权限";
+  const operational = buildSystemPrompt("operational");
+  assert.ok(operational.includes(hint));
+  assert.ok(operational.includes("不要调用 report_gap"));
+  assert.equal(buildSystemPrompt("full").includes(hint), false);
+  assert.equal(operational.includes("get_payables"), false);
+});

@@ -54,3 +54,39 @@ test("核对顺序：可见性先于缺数据，参数先于缺数据", () => {
   assert.equal(check({ nearest_operation: "made_up" }, "full", empty).code, "AGENT_GAP_OPERATION_UNKNOWN");
   assert.equal(check({ nearest_operation: "list_documents", missing_param: "status" }, "full", empty).code, "AGENT_GAP_PARAM_SUPPORTED");
 });
+
+const MONEY_QUESTIONS = [
+  "MOCK-ORD-001 的应收账款有多少",
+  "MOCK-ORD-001 的应付账款有多少",
+  "MOCK-ORD-001 这张单的成本和利润是多少",
+  "MOCK-ORD-001 这张单的人工成本是多少",
+  "MOCK-ORD-001 的对账情况怎么样",
+  "海风家居（模拟）还欠我们多少钱",
+  "MOCK-PROD-001 这张销售单的应收是多少",
+  "MOCK-PO-001 这张销售单的金额是多少",
+  "金额多少",
+];
+
+const MONEY_MESSAGE = "这属于金额或财务数据，系统里有，但当前账号没有权限查看，不是缺工具。直接告诉用户需要财务权限的账号才能查询。";
+
+test("普通档位问金额或财务：判没有权限，不算缺口", () => {
+  for (const question of MONEY_QUESTIONS) {
+    const result = checkGap(BASE, { accessLevel: "operational", executed: [], question });
+    assert.deepEqual(result, { accepted: false, code: "AGENT_GAP_PERMISSION", message: MONEY_MESSAGE }, question);
+  }
+});
+
+test("追问里没有金额词，缺口短语里有：同样判没有权限", () => {
+  const result = checkGap({ ...BASE, missing: "metric", missing_detail: "应付金额" }, { accessLevel: "operational", executed: [], question: "那它呢" });
+  assert.equal(result.code, "AGENT_GAP_PERMISSION");
+});
+
+test("权限判断先于最近邻可见性", () => {
+  const result = checkGap({ ...BASE, nearest_operation: "get_payables" }, { accessLevel: "operational", executed: [], question: "应付多少" });
+  assert.equal(result.code, "AGENT_GAP_PERMISSION");
+});
+
+test("财务档位问金额照常核对；普通档位问数量照常放行", () => {
+  assert.equal(checkGap(BASE, { accessLevel: "full", executed: [], question: "应付账款按仓库汇总" }).accepted, true);
+  assert.equal(checkGap(BASE, { accessLevel: "operational", executed: [], question: "各个仓库的原料库存分别是多少" }).accepted, true);
+});

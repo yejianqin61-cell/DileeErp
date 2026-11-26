@@ -459,7 +459,7 @@ export class AgentOrchestrator {
     const startedAt = Date.now();
     let result: GapCheckResult;
     try {
-      result = checkGap(parseGapDeclaration(call.args, run.question), { accessLevel: run.accessLevel as AgentAccessLevel, executed });
+      result = checkGap(parseGapDeclaration(call.args, run.question), { accessLevel: run.accessLevel as AgentAccessLevel, executed, question: run.question });
     } catch (error) {
       const code = httpErrorCode(error);
       if (!(error instanceof HttpException) || !code) throw error;

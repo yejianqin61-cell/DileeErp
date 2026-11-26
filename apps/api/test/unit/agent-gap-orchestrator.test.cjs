@@ -8,10 +8,10 @@ const { createPrisma, principalFor, createPlanningRun, roleReaderFor, scriptedPr
 const QUESTION = "各仓库库存多少";
 const declare = (id, patch = {}) => ({ id, tool: "report_gap", operation: "declare_gap", args: { nearest_operation: "list_low_stock_materials", missing: "group_by", missing_detail: "按仓库分组", ...patch } });
 
-async function drive(plans, rows = [{ material_code: "M-1" }]) {
+async function drive(plans, rows = [{ material_code: "M-1" }], question = QUESTION) {
   const db = createPrisma();
   const state = new AgentStateManager(db);
-  const run = await createPlanningRun(state, "operational", QUESTION);
+  const run = await createPlanningRun(state, "operational", question);
   const provider = scriptedProvider(plans);
   const executor = {
     calls: [],
@@ -70,4 +70,11 @@ test("gap_declared 是内部事件：在类型清单里，不推给浏览器", a
   assert.equal(body.includes("gap_declared"), false);
   assert.equal(body.includes("按仓库分组"), false);
   assert.ok(body.includes('"completed"'));
+});
+
+test("普通档位问应付：不写缺口事件，回没有权限", async () => {
+  const result = await drive([() => [declare("g1", { missing: "object", missing_detail: "订单维度汇总" })]], undefined, "MOCK-ORD-001 的应付账款有多少");
+  assert.equal(result.saved.state, "completed");
+  assert.equal(result.gaps.length, 0);
+  assert.equal(JSON.parse(result.toolMessages[0].content).error.code, "AGENT_GAP_PERMISSION");
 });

@@ -11,8 +11,13 @@ export type GapCheckResult = { accepted: true; gap: AcceptedGap } | { accepted: 
 
 const reject = (code: string, message: string): GapCheckResult => ({ accepted: false, code, message });
 
-export function checkGap(declaration: GapDeclaration, context: { accessLevel: AgentAccessLevel; executed: readonly ExecutedOperation[] }): GapCheckResult {
+const MONEY_TERMS = /金额|单价|价格|多少钱|应收|应付|收款|付款|回款|对账|利润|毛利|成本|工资|薪|工价|人工费|费用|科目|凭证|财务/;
+
+export function checkGap(declaration: GapDeclaration, context: { accessLevel: AgentAccessLevel; executed: readonly ExecutedOperation[]; question?: string }): GapCheckResult {
   const { nearest_operation: nearest, missing_param: param } = declaration;
+  if (context.accessLevel !== "full" && [context.question ?? "", declaration.missing_detail].some((text) => MONEY_TERMS.test(text))) {
+    return reject("AGENT_GAP_PERMISSION", "这属于金额或财务数据，系统里有，但当前账号没有权限查看，不是缺工具。直接告诉用户需要财务权限的账号才能查询。");
+  }
   const candidates = candidateOperations("", context.accessLevel);
   const entry = candidates.find((candidate) => candidate.operation === nearest);
   if (!entry) {
