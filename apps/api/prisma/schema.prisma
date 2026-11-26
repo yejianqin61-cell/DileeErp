@@ -3614,9 +3614,11 @@ model FinanceSlipLine {
 /// （user_id 只是逻辑引用）。所有查询必须带 userId 条件，禁止只凭 UUID 取别人的会话。
 model AgentSession {
   id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  userId    String    @map("user_id") @db.Uuid
+  title     String?   @db.VarChar(100)
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
 
   @@index([userId])
   @@map("agent_sessions")

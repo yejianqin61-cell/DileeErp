@@ -54,11 +54,29 @@ export class AgentStateManager {
 
   /** 会话列表只按本人查：这里不给「全量会话」留入口。 */
   async listSessions(userId: string) {
-    return this.prisma.agentSession.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } });
+    return this.prisma.agentSession.findMany({ where: { userId, deletedAt: null }, orderBy: { updatedAt: "desc" } });
   }
 
   async findSession(sessionId: string, userId: string) {
-    return this.prisma.agentSession.findFirst({ where: { id: sessionId, userId } });
+    return this.prisma.agentSession.findFirst({ where: { id: sessionId, userId, deletedAt: null } });
+  }
+
+  async renameSession(sessionId: string, userId: string, title: string, updatedAt: Date) {
+    await this.prisma.agentSession.updateMany({ where: { id: sessionId, userId, deletedAt: null }, data: { title, updatedAt } });
+  }
+
+  async deleteSession(sessionId: string, userId: string, updatedAt: Date) {
+    await this.prisma.agentSession.updateMany({ where: { id: sessionId, userId, deletedAt: null }, data: { deletedAt: new Date(), updatedAt } });
+  }
+
+  async hasActiveRunInSession(sessionId: string, userId: string): Promise<boolean> {
+    const run = await this.prisma.agentRun.findFirst({ where: { sessionId, userId, state: { in: [...AGENT_ACTIVE_STATES] } }, select: { id: true } });
+    return Boolean(run);
+  }
+
+  async sessionIdsWithFullRuns(userId: string): Promise<Set<string>> {
+    const runs = await this.prisma.agentRun.findMany({ where: { userId, accessLevel: "full" }, select: { sessionId: true } });
+    return new Set(runs.map((run) => run.sessionId));
   }
 
   /** 某会话下的本人 run（快照恢复用）；降权可见性由调用方按档位过滤。 */

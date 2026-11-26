@@ -1,4 +1,13 @@
-import { IsNotEmpty, IsString, IsUUID } from "class-validator";
+import { Transform } from "class-transformer";
+import { IsNotEmpty, IsString, IsUUID, MaxLength } from "class-validator";
+
+export class UpdateSessionDto {
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString({ message: "title 必须是字符串" })
+  @IsNotEmpty({ message: "title 不能为空" })
+  @MaxLength(100, { message: "title 不能超过 100 个字" })
+  title!: string;
+}
 
 /**
  * POST /business-query/sessions/:id/runs 的请求体（模块设计「API 权限与数据表」）。

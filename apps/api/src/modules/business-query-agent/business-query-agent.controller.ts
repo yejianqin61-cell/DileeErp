@@ -1,8 +1,8 @@
-import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, HttpCode, HttpException, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Post, Req, Res, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, HttpCode, HttpException, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Req, Res, UnauthorizedException, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { AgentStateManager, AgentStateTransitionError } from "./state-manager";
-import { CreateRunDto } from "./business-query-agent.dto";
+import { CreateRunDto, UpdateSessionDto } from "./business-query-agent.dto";
 import { AgentOrchestrator } from "./agent-orchestrator";
 import { ConcurrencyGate } from "./concurrency-gate";
 import { StreamTransport } from "./stream-transport";
@@ -40,15 +40,34 @@ export class BusinessQueryAgentController {
   async listSessions(@Req() request: AgentAuthenticatedRequest) {
     const principal = requirePrincipal(request);
     const sessions = await this.state.listSessions(principal.user.id);
-    return { data: { sessions: sessions.map((session) => ({ session_id: session.id, created_at: session.createdAt, updated_at: session.updatedAt })) }, meta: {} };
+    const hidden = principal.accessLevel === "full" ? new Set<string>() : await this.state.sessionIdsWithFullRuns(principal.user.id);
+    return { data: { sessions: sessions.map((session) => ({ session_id: session.id, title: hidden.has(session.id) ? null : session.title, created_at: session.createdAt, updated_at: session.updatedAt })) }, meta: {} };
+  }
+
+  @Patch("sessions/:id")
+  async renameSession(@Param("id", ParseUUIDPipe) sessionId: string, @Body() dto: UpdateSessionDto, @Req() request: AgentAuthenticatedRequest) {
+    const principal = requirePrincipal(request);
+    const session = await this.requireSession(sessionId, principal.user.id);
+    await this.state.renameSession(sessionId, principal.user.id, dto.title, session.updatedAt);
+    return { data: { session_id: sessionId, title: dto.title }, meta: {} };
+  }
+
+  @Delete("sessions/:id")
+  async deleteSession(@Param("id", ParseUUIDPipe) sessionId: string, @Req() request: AgentAuthenticatedRequest) {
+    const principal = requirePrincipal(request);
+    const session = await this.requireSession(sessionId, principal.user.id);
+    if (await this.state.hasActiveRunInSession(sessionId, principal.user.id)) {
+      throw new ConflictException({ code: "RUN_IN_PROGRESS", message: "这个会话还有正在进行的查询，请等待完成或取消后再删除", details: [] });
+    }
+    await this.state.deleteSession(sessionId, principal.user.id, session.updatedAt);
+    return { data: { session_id: sessionId }, meta: {} };
   }
 
   /** 会话快照：刷新页恢复用。旧 full run 在降权后的档位下不可见，也不可读。 */
   @Get("sessions/:id")
   async sessionSnapshot(@Param("id", ParseUUIDPipe) sessionId: string, @Req() request: AgentAuthenticatedRequest) {
     const principal = requirePrincipal(request);
-    const session = await this.state.findSession(sessionId, principal.user.id);
-    if (!session) throw new NotFoundException({ code: "AGENT_SESSION_NOT_FOUND", message: "会话不存在", details: [] });
+    await this.requireSession(sessionId, principal.user.id);
     const runs = await this.state.listRuns(sessionId, principal.user.id);
     const visible = runs.filter((run) => isReadableAt(principal, run));
     const data = [];
@@ -75,8 +94,7 @@ export class BusinessQueryAgentController {
   @HttpCode(202)
   async createRun(@Param("id", ParseUUIDPipe) sessionId: string, @Body() dto: CreateRunDto, @Req() request: AgentAuthenticatedRequest, @Res({ passthrough: true }) response: Response) {
     const principal = requirePrincipal(request);
-    const session = await this.state.findSession(sessionId, principal.user.id);
-    if (!session) throw new NotFoundException({ code: "AGENT_SESSION_NOT_FOUND", message: "会话不存在", details: [] });
+    await this.requireSession(sessionId, principal.user.id);
 
     // 幂等：同键同问题返回原 run；同键不同问题 409；已降权的旧 full run 返回权限错误（模块设计）。
     const existing = await this.state.findRunByIdempotencyKey(sessionId, dto.client_message_id);
@@ -155,6 +173,12 @@ export class BusinessQueryAgentController {
     this.aborts.get(runId)?.abort();
     this.observability.record(runId, { kind: "run_cancelled", user_id: principal.user.id, access_level: principal.accessLevel });
     return { data: { state: run.state }, meta: {} };
+  }
+
+  private async requireSession(sessionId: string, userId: string) {
+    const session = await this.state.findSession(sessionId, userId);
+    if (!session) throw new NotFoundException({ code: "AGENT_SESSION_NOT_FOUND", message: "会话不存在", details: [] });
+    return session;
   }
 }
 

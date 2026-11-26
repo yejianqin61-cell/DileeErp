@@ -31,8 +31,10 @@ function createPrisma() {
     agentGapCandidate: table(store.gapCandidates, ["nearestOperation", "missing"], () => ({ status: "accumulating", dispatchedAt: null })),
     agentGapReport: table(store.gapReports, ["candidateId", "runId"], () => ({})),
     agentSession: {
-      create: async ({ data }) => { const row = { id: randomUUID(), ...data, createdAt: new Date(), updatedAt: new Date() }; store.sessions.push(row); return row; },
+      create: async ({ data }) => { const row = { id: randomUUID(), title: null, deletedAt: null, ...data, createdAt: new Date(), updatedAt: new Date() }; store.sessions.push(row); return row; },
+      findFirst: async ({ where = {} } = {}) => store.sessions.find((row) => matches(row, where)) ?? null,
       findMany: async ({ where = {} } = {}) => store.sessions.filter((row) => matches(row, where)),
+      updateMany: async ({ where = {}, data }) => { const matched = store.sessions.filter((row) => matches(row, where)); for (const row of matched) Object.assign(row, { updatedAt: new Date() }, data); return { count: matched.length }; },
     },
     agentRun: {
       create: async ({ data }) => { const row = { id: randomUUID(), ...data, createdAt: new Date(), updatedAt: new Date() }; store.runs.push(row); return row; },
