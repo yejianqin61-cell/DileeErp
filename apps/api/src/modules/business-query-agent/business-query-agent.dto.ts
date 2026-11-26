@@ -1,5 +1,5 @@
 import { Transform } from "class-transformer";
-import { IsNotEmpty, IsString, IsUUID, MaxLength } from "class-validator";
+import { ArrayMaxSize, IsArray, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 
 export class UpdateSessionDto {
   @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
@@ -22,4 +22,10 @@ export class CreateRunDto {
 
   @IsUUID(undefined, { message: "client_message_id 必须是 UUID" })
   client_message_id!: string;
+
+  @IsOptional()
+  @IsArray({ message: "context_run_ids 必须是数组" })
+  @ArrayMaxSize(200, { message: "context_run_ids 最多 200 项" })
+  @IsUUID(undefined, { each: true, message: "context_run_ids 的每一项必须是 UUID" })
+  context_run_ids?: string[];
 }

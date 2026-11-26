@@ -21,11 +21,11 @@ export const AGENT_HISTORY_TURNS = 8;
 export class AgentContextManager {
   constructor(private readonly state: AgentStateManager) {}
 
-  async history(userId: string, sessionId: string, accessLevel: AgentAccessLevel): Promise<AgentLlmMessage[]> {
+  async history(userId: string, sessionId: string, accessLevel: AgentAccessLevel, runIds?: readonly string[]): Promise<AgentLlmMessage[]> {
     // listRuns 按 createdAt 升序返回本人该会话的 run；轮次去尾取 8。
     const runs = await this.state.listRuns(sessionId, userId);
     const completed = runs
-      .filter((run) => run.state === "completed" && (accessLevel === "full" || run.accessLevel !== "full"))
+      .filter((run) => run.state === "completed" && (accessLevel === "full" || run.accessLevel !== "full") && (!runIds || runIds.includes(run.id)))
       .slice(-AGENT_HISTORY_TURNS);
     return completed.flatMap((run) => [
       { role: "user", content: run.question } as AgentLlmMessage,

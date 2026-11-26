@@ -129,7 +129,7 @@ export class AgentOrchestrator {
     this.gapCandidates = options?.gapCandidates;
   }
 
-  async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
+  async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal, contextRunIds?: readonly string[]): Promise<void> {
     // 重读并确认仍是 planning：用户可能在编排器启动前就取消（迟到启动是无害空转）。
     const fresh = await this.state.findRun(run.id, principal.user.id);
     if (!fresh || fresh.state !== "planning") return;
@@ -139,18 +139,18 @@ export class AgentOrchestrator {
       : signal;
     const startedAt = Date.now();
     try {
-      await this.queryPhase(fresh, principal, composed);
+      await this.queryPhase(fresh, principal, composed, contextRunIds);
     } catch (error) {
       await this.failRun(fresh.id, principal.user.id, error, startedAt);
     }
   }
 
-  private async queryPhase(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
+  private async queryPhase(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal, contextRunIds?: readonly string[]): Promise<void> {
     const runId = run.id;
     const startedAt = Date.now();
     const tools = toolRegistry.visibleTools(run.accessLevel as "full" | "operational");
     const history = this.context
-      ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel)
+      ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel, contextRunIds)
       : [];
     const messages: AgentLlmMessage[] = [
       { role: "system", content: buildSystemPrompt(run.accessLevel as AgentAccessLevel) },

@@ -112,6 +112,13 @@ export class BusinessQueryAgentController {
       throw new ConflictException({ code: "RUN_IN_PROGRESS", message: "你已有一个正在进行的查询，请等待完成或取消后再提问", details: [] });
     }
 
+    if (dto.context_run_ids?.length) {
+      const own = new Set((await this.state.listRuns(sessionId, principal.user.id)).map((run) => run.id));
+      if (dto.context_run_ids.some((id) => !own.has(id))) {
+        throw new BadRequestException({ code: "AGENT_CONTEXT_INVALID", message: "上下文轮次不属于当前会话", details: [] });
+      }
+    }
+
     // 进程内许可（R-8）：无空位 429 + Retry-After，不建 run、不排队。
     const permit = this.gate.tryAcquire(principal.user.id);
     if (!permit) {
@@ -134,7 +141,7 @@ export class BusinessQueryAgentController {
       this.aborts.set(run.id, abort);
       this.observability.record(run.id, { kind: "run_created", user_id: principal.user.id, access_level: principal.accessLevel });
       // 许可由编排器 finally 释放；启动前的任何失败走下面的 catch 释放，两条路只释放一次。
-      void this.orchestrator.run(run, principal, abort.signal).finally(() => {
+      void this.orchestrator.run(run, principal, abort.signal, dto.context_run_ids).finally(() => {
         this.aborts.delete(run.id);
         permit.release();
       });
