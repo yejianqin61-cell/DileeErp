@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { FULL_ACCOUNT_GROUPS, loadCases, selectCases } from "./golden-cases.mjs";
+import { assertTestDatabaseUrl, readDeclarations } from "./golden-gap-metrics.mjs";
 import { judgeAll } from "./golden-judge.mjs";
 import { renderMarkdown, summarize } from "./golden-report.mjs";
 import { runReps } from "./golden-reps.mjs";
@@ -128,6 +129,15 @@ async function main() {
   const casesDir = fileURLToPath(new URL("../../apps/api/test/agent-golden/cases/", import.meta.url));
   const cases = selectCases(loadCases(casesDir), groups);
 
+  let database;
+  if (cases.some((caseDef) => caseDef.gap)) {
+    const url = process.env.GOLDEN_DATABASE_URL;
+    assertTestDatabaseUrl(url);
+    const { PrismaClient } = await import("@prisma/client");
+    database = new PrismaClient({ datasources: { db: { url } } });
+    await database.$connect();
+  }
+
   const needsFullAccount = cases.some((caseDef) => FULL_ACCOUNT_GROUPS.includes(caseDef.group));
   const defaultCookie = await login({ fetchImpl: fetch, apiBase, username, password });
   let fullCookie = defaultCookie;
@@ -150,6 +160,7 @@ async function main() {
     const outcome = missing.length > 0
       ? { terminal: "unknown", errorCode: null, ops: [], failureCodes: [], sources: [], answer: "", toolCalls: 0, answerChunks: 0, durationMs: 0 }
       : await runCase({ fetchImpl: fetch, apiBase, cookie: cookieFor(caseDef), caseDef, signal: AbortSignal.timeout(600_000) });
+    if (caseDef.gap) outcome.gapDeclarations = await readDeclarations(database, outcome.runIds ?? []);
     return { outcome, missing };
   };
   const judgeRows = (list) => list.map((entry) => ({ ...judgeAll([entry])[0], failureCodes: entry.outcome.failureCodes, modelSteps: entry.outcome.modelSteps ?? 0, ...(entry.rep ? { rep: entry.rep } : {}) }));
@@ -189,6 +200,7 @@ async function main() {
     if (jsonOut) writeFileSync(jsonOut, snapshotText(entries), "utf8");
   }
   if (jsonOut) process.stderr.write(`原始结果已写入 ${jsonOut}\n`);
+  await database?.$disconnect();
   const judged = judgeRows(entries);
 
   const { summary, markdown } = buildReport({ judged, entries, docCount: present.size, apiBase, runAt, analysis });
