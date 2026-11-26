@@ -150,3 +150,80 @@ describe("顾问页 · 冷启动先出缓存", () => {
     expect(screen.queryByTestId("page-agent")).toBeNull();
   });
 });
+
+const OFFLINE = "无法连接业务查询服务，当前显示本地缓存";
+
+type StreamOptions = { onEvent: (event: { seq: number; type: string; data: Record<string, unknown> }) => void };
+
+function followLive() {
+  const live: { options: StreamOptions | null } = { options: null };
+  stream.mockImplementation(async (options: StreamOptions) => { live.options = options; await never(); });
+  return live;
+}
+
+describe("顾问页 · 缓存的保留、清除与回填", () => {
+  it.each([
+    ["网络错误", () => new TypeError("fetch failed")],
+    ["非 JSON 响应", () => new errors.ApiClientError("REQUEST_ERROR", "请求失败（HTTP 502）")],
+  ])("%s 时保留缓存内容并提示，发送仍禁用", async (_label, failure) => {
+    seed();
+    api.get.mockImplementation(async () => { throw failure(); });
+    renderPage();
+
+    expect(await screen.findByTestId("agent-notice")).toHaveTextContent(OFFLINE);
+    expect(screen.getByTestId("business-query-answer")).toHaveTextContent("缓存答案");
+    expect(cache.data.has(KEY)).toBe(true);
+    await userEvent.type(screen.getByLabelText("业务问题"), "新问题");
+    expect(screen.getByTestId("business-query-submit")).toBeDisabled();
+  });
+
+  it("权限类错误清缓存并清屏", async () => {
+    seed();
+    api.get.mockImplementation(async () => { throw new errors.ApiClientError("AGENT_ACCESS_DENIED", "当前账号没有可用角色，无法使用业务查询"); });
+    renderPage();
+
+    expect(await screen.findByText("当前账号没有可用角色，无法使用业务查询")).toBeVisible();
+    await waitFor(() => expect(cache.data.has(KEY)).toBe(false));
+    expect(screen.queryByText("缓存答案")).toBeNull();
+  });
+
+  it("进行中的轮次收到撤权事件后清缓存且不再回填", async () => {
+    const live = followLive();
+    api.get.mockResolvedValueOnce(sessions()).mockResolvedValueOnce(snapshot([run(), run({ run_id: "r-2", state: "responding", answer: "进行中" })]));
+    renderPage();
+    await waitFor(() => expect(live.options).not.toBeNull());
+    await waitFor(() => expect(cache.data.has(KEY)).toBe(true));
+
+    act(() => live.options?.onEvent({ seq: 0, type: "error", data: { code: "ACCESS_REVOKED", message: "当前档位已无法读取该回答" } }));
+
+    await waitFor(() => expect(cache.data.has(KEY)).toBe(false));
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("续接被拒时清缓存", async () => {
+    stream.mockImplementation(async () => { throw Object.assign(new Error("当前档位无法读取该回答"), { refused: true }); });
+    api.get.mockResolvedValueOnce(sessions()).mockResolvedValueOnce(snapshot([run(), run({ run_id: "r-2", state: "responding" })]));
+    renderPage();
+
+    expect(await screen.findByTestId("agent-notice")).toHaveTextContent("当前档位无法读取该回答");
+    await waitFor(() => expect(cache.data.has(KEY)).toBe(false));
+  });
+
+  it("轮次完成后补拉快照只写缓存", async () => {
+    const live = followLive();
+    api.get.mockResolvedValueOnce(sessions()).mockResolvedValueOnce(snapshot([run({ answer: "旧答案" })]));
+    api.post.mockResolvedValueOnce({ data: { run_id: "r-2", state: "planning" } });
+    renderPage();
+    await screen.findByTestId("business-query-answer");
+    await userEvent.type(screen.getByLabelText("业务问题"), "新问题{Enter}");
+    await waitFor(() => expect(live.options).not.toBeNull());
+    api.get.mockResolvedValueOnce(snapshot([run({ answer: "旧答案" }), run({ run_id: "r-2", question: "新问题", answer: "补拉里的新答案" })]));
+
+    act(() => live.options?.onEvent({ seq: 2, type: "completed", data: { answer: "流里的新答案", sources: [] } }));
+
+    await waitFor(() => expect(JSON.stringify(cache.data.get(KEY))).toContain("补拉里的新答案"));
+    expect(screen.getByText("流里的新答案")).toBeVisible();
+    expect(screen.queryByText("补拉里的新答案")).toBeNull();
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
+});

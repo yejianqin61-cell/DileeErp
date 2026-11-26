@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Bell, ClipboardList, Coins, Factory, History, LayoutDashboard, LogOut, Package, ShieldCheck, Sparkles, UserCog, Users, WalletCards } from "lucide-react";
 import type { ReactNode } from "react";
+import { openAgentCacheStore } from "../../lib/agent-cache-idb";
 import { cn } from "../../lib/utils";
 import { ApiClientError, apiPost } from "../../lib/api-client";
 import { fetchSessionProfile, type SessionProfile } from "../../lib/session";
@@ -42,7 +43,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       setAuthError(cause instanceof ApiClientError ? cause.message : "无法连接服务，请稍后重试"); setReady(true);
     });
   }, [pathname]);
-  async function logout() { await apiPost("/auth/logout"); window.location.href = "/login"; }
+  async function logout() {
+    const cleared = openAgentCacheStore()?.clear().catch(() => undefined);
+    await Promise.race([cleared, new Promise((resolve) => setTimeout(resolve, 1000))]);
+    await apiPost("/auth/logout");
+    window.location.href = "/login";
+  }
   if (pathname === "/login") return <>{children}</>;
   if (!ready) return <div className="feedback-state"><span>正在验证登录状态...</span></div>;
   if (authError) return <div className="feedback-state"><span>{authError}</span><Button variant="secondary" onClick={() => window.location.reload()}>重试</Button></div>;

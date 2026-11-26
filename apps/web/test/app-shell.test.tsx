@@ -18,6 +18,8 @@ import { AppShell } from "../components/layout/app-shell";
 // next/navigation 的桩：pathname 由用例控制（vi.hoisted 避免 mock 工厂的 TDZ）。
 const route = vi.hoisted(() => ({ pathname: "/" }));
 vi.mock("next/navigation", () => ({ usePathname: () => route.pathname }));
+const cacheStore = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), delete: vi.fn(), clear: vi.fn() }));
+vi.mock("../lib/agent-cache-idb", () => ({ openAgentCacheStore: () => cacheStore }));
 
 /** 与 app-shell.tsx 的导航表一致（文案 / href / 生成的 testid）。账号中心固定排在最后。 */
 const NAV_ITEMS = [
@@ -302,6 +304,23 @@ describe("AppShell · 鉴权通过后的导航与主区渲染", () => {
     rerender(<AppShell><div data-testid="page-content">生产看板</div></AppShell>);
 
     await waitFor(() => expect(screen.getByTestId("app-main")).not.toHaveAttribute("data-layout"));
+  });
+});
+
+describe("AppShell · 退出登录", () => {
+  it.each([
+    ["清除成功", () => Promise.resolve()],
+    ["清除失败", () => Promise.reject(new Error("存储不可用"))],
+  ])("先清顾问本地缓存再请求退出（%s）", async (_label, outcome) => {
+    stubLocation();
+    cacheStore.clear.mockImplementation(outcome);
+    const calls = stubApi((url) => (url.endsWith("/auth/logout") ? apiNoContent() : me()));
+    renderShell();
+
+    await userEvent.click(await screen.findByTestId("logout-button"));
+
+    await waitFor(() => expect(callsTo(calls, "/auth/logout")).toHaveLength(1));
+    expect(cacheStore.clear).toHaveBeenCalledTimes(1);
   });
 });
 

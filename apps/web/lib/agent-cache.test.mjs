@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "./agent-cache.ts";
 import { openAgentCacheStore } from "./agent-cache-idb.ts";
+import { followRunStream } from "./business-query-stream.ts";
 
 function memoryStore() {
   const data = new Map();
@@ -83,4 +84,17 @@ test("无 indexedDB 时没有存储；角色到档位", () => {
   assert.equal(cacheAccessLevel(["qita", "laoban"]), "full");
   assert.equal(cacheAccessLevel(["administrator"]), "operational");
   assert.equal(cacheAccessLevel([]), "operational");
+});
+
+test("续接被拒的错误带可判别标记，文案不变", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 403 });
+  try {
+    await assert.rejects(
+      followRunStream({ runId: "r-1", lastSeq: 0, signal: new AbortController().signal, onEvent: () => undefined }),
+      (error) => error.refused === true && error.message === "当前档位无法读取该回答",
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
 });

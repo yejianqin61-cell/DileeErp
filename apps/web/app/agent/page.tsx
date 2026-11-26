@@ -26,6 +26,9 @@ import {
 } from "../../lib/agent-chat";
 
 const HISTORY_LIMIT = 20;
+const OFFLINE_NOTICE = "无法连接业务查询服务，当前显示本地缓存";
+
+const isUnreachable = (cause: unknown) => !(cause instanceof ApiClientError) || cause.code === "REQUEST_ERROR";
 
 type Notice = { message: string; action: "submit" | "reload" | null };
 
@@ -70,11 +73,12 @@ export default function AgentPage() {
       onRetry: () => dispatch({ type: "DISCONNECTED" }),
     }).catch((cause) => {
       if (abort.signal.aborted) return;
+      if (cache && (cause as { refused?: boolean }).refused) void clearCachedSession(cache.store, cache.userId);
       setNotice({ message: cause instanceof Error ? cause.message : "与服务的连接中断，请刷新页面重试", action: "reload" });
     }).finally(() => {
       if (streamAbort.current === abort) streamAbort.current = null;
     });
-  }, []);
+  }, [cache]);
 
   const hydrateSession = useCallback(async (targetSessionId: string, accept: () => boolean) => {
     const snapshot = (await apiGet<{ session_id: string; runs: AgentSnapshotRun[] }>(`/business-query/sessions/${encodeURIComponent(targetSessionId)}`)).data;
@@ -104,6 +108,8 @@ export default function AgentPage() {
   useEffect(() => {
     let cancelled = false;
     let answered = false;
+    let shown = false;
+    let offline = false;
     const ticket = ++epoch.current;
     const current = () => !cancelled && ticket === epoch.current;
     const accept = () => {
@@ -115,9 +121,14 @@ export default function AgentPage() {
       setSyncing(true);
       void readCachedSession(cache.store, cache.userId, cache.level).then((cached) => {
         if (!cached || answered || !current()) return;
+        shown = true;
         setSessionId(cached.session_id);
         setHistory(cached.runs.map(turnFromSnapshotRun));
         setLoading(false);
+        if (offline) {
+          setLoadError("");
+          setNotice({ message: OFFLINE_NOTICE, action: "reload" });
+        }
       });
     }
     void (async () => {
@@ -136,10 +147,19 @@ export default function AgentPage() {
         }
         if (current()) setSyncing(false);
       } catch (cause) {
-        if (current()) {
+        if (!current()) return;
+        if (cache && isUnreachable(cause)) {
+          offline = true;
+          if (shown) {
+            setNotice({ message: OFFLINE_NOTICE, action: "reload" });
+            return;
+          }
+        } else {
           answered = true;
-          setLoadError(cause instanceof ApiClientError ? cause.message : "无法连接业务查询服务");
+          if (cache) void clearCachedSession(cache.store, cache.userId);
+          setHistory([]);
         }
+        setLoadError(cause instanceof ApiClientError ? cause.message : "无法连接业务查询服务");
       } finally {
         if (current()) setLoading(false);
       }
@@ -149,6 +169,25 @@ export default function AgentPage() {
       streamAbort.current?.abort();
     };
   }, [cache, hydrateSession]);
+
+  const revoked = state.error?.code === "ACCESS_REVOKED";
+  const previousPhase = useRef(state.phase);
+  useEffect(() => {
+    const finished = isBusyPhase(previousPhase.current) && !isBusyPhase(state.phase) && state.phase !== "idle";
+    previousPhase.current = state.phase;
+    if (!cache) return;
+    if (revoked) {
+      void clearCachedSession(cache.store, cache.userId);
+      return;
+    }
+    if (!finished || !sessionId) return;
+    const ticket = epoch.current;
+    void apiGet<{ runs: AgentSnapshotRun[] }>(`/business-query/sessions/${encodeURIComponent(sessionId)}`)
+      .then(async ({ data }) => {
+        if (ticket === epoch.current) await writeCachedSession(cache.store, cache.userId, sessionId, data.runs);
+      })
+      .catch(() => undefined);
+  }, [cache, revoked, sessionId, state.phase]);
 
   useEffect(() => {
     if (!loading && !loadError) inputRef.current?.focus();
