@@ -2,6 +2,7 @@
 
 import { Fragment, useMemo, type ReactNode } from "react";
 import type { List, ListItem, Nodes, PhrasingContent, RootContent, Table } from "mdast";
+import { InlineMath, MathBlock } from "../../features/agent-chat/markdown/math";
 import { toMdAst } from "../../features/agent-chat/markdown/parse";
 import { useThrottledText } from "../../features/agent-chat/markdown/use-throttled-text";
 import { cn } from "../../lib/utils";
@@ -36,7 +37,7 @@ function renderBlock(block: RootContent, caret: boolean): ReactNode {
     case "html":
       return <p className="agent-md-p">{renderText(block.value)}{caret && <Caret />}</p>;
     case "math":
-      return <p className="agent-md-p">{renderText(block.value)}</p>;
+      return <MathBlock value={block.value} />;
     case "code":
       return (
         <div className="agent-md-code">
@@ -121,8 +122,9 @@ function renderPhrase(node: Extract<Nodes, PhrasingContent>): ReactNode {
   switch (node.type) {
     case "text":
     case "html":
-    case "inlineMath":
       return renderText(node.value);
+    case "inlineMath":
+      return <InlineMath value={node.value} />;
     case "break":
       return <br />;
     case "inlineCode":
