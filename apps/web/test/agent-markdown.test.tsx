@@ -4,7 +4,7 @@
 // （裸 HTML 只当文本、javascript: 不生成 href）。解析细节由 test/agent-markdown-parse.test.ts 覆盖。
 // 注意：globals: false，测试 API 必须显式 import（见 apps/web/vitest.config.mts）。
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { AgentMarkdown } from "../components/agent/agent-markdown";
 
 describe("AgentMarkdown 渲染契约", () => {
@@ -123,6 +123,15 @@ describe("AgentMarkdown 渲染契约", () => {
     render(<AgentMarkdown text={"> 引用提示"} caret />);
 
     expect(screen.getByTestId("agent-stream-caret").closest("blockquote p")).not.toBeNull();
+  });
+
+  it("新段落到达后光标移到新的末段，旧段不再带光标", async () => {
+    const view = render(<AgentMarkdown text="甲段" caret />);
+
+    view.rerender(<AgentMarkdown text={["甲段", "", "乙段"].join(String.fromCharCode(10))} caret />);
+
+    await waitFor(() => expect(screen.getByText("乙段")).toContainElement(screen.getByTestId("agent-stream-caret")));
+    expect(screen.getAllByTestId("agent-stream-caret")).toHaveLength(1);
   });
 
   it("以表格结尾时不显示流式光标", () => {

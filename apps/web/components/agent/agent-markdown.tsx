@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, Fragment, useContext, useMemo, type ReactNode } from "react";
+import { createContext, Fragment, memo, useContext, useMemo, type ReactNode } from "react";
 import type { Code, List, ListItem, Nodes, PhrasingContent, RootContent, Table } from "mdast";
 import { CodeBlock } from "../../features/agent-chat/markdown/code-block";
 import { InlineMath, MathBlock } from "../../features/agent-chat/markdown/math";
@@ -10,13 +10,26 @@ import { cn } from "../../lib/utils";
 
 const Streaming = createContext(false);
 
+type BlockProps = { block: RootContent; source: string; caret: boolean };
+
+const TopBlock = memo(
+  function TopBlock({ block, caret }: BlockProps) {
+    return <>{renderBlock(block, caret)}</>;
+  },
+  (previous, next) => previous.source === next.source && previous.caret === next.caret,
+);
+
 export function AgentMarkdown({ text, className, caret = false }: { text: string; className?: string; caret?: boolean }) {
   const shown = useThrottledText(text, caret);
   const blocks = useMemo(() => toMdAst(shown).children, [shown]);
 
   return (
     <div className={cn("agent-md", className)} data-testid="agent-markdown">
-      <Streaming.Provider value={caret}>{renderBlocks(blocks, caret)}</Streaming.Provider>
+      <Streaming.Provider value={caret}>
+        {blocks.map((block, index) => (
+          <TopBlock key={index} block={block} source={shown.slice(block.position?.start.offset, block.position?.end.offset)} caret={caret && index === blocks.length - 1} />
+        ))}
+      </Streaming.Provider>
     </div>
   );
 }
