@@ -64,7 +64,7 @@ const ROUTES = [
   { label: "POST /:id/close", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/close`, payload: {} },
   // 删除草稿销售单（2026-10-08）：匿名探测只走到鉴权层（401），不会真的删到数据 ——
   // 本文件「只读探测」的约束因此仍然成立。nil uuid 上即便登录也只会是 404。
-  { label: "DELETE /:id", method: "delete", path: `/api/v1/sales-orders/${UNKNOWN_ID}` },
+  { label: "DELETE /:id", method: "del", path: `/api/v1/sales-orders/${UNKNOWN_ID}` },
 ];
 
 /** 每用例独立登录（约束 1）。登录本身顺带覆盖「POST 默认 201」。 */
