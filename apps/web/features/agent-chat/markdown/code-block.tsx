@@ -22,13 +22,13 @@ export function CodeBlock({ code, language, streaming }: { code: string; languag
     return () => { mounted = false; };
   }, [lang, loaded]);
 
-  const html = useMemo(() => (lang !== null && loaded ? Prism.highlight(code, Prism.languages[lang], lang) : null), [code, lang, loaded]);
+  const markup = useMemo(() => (lang !== null && loaded ? { __html: Prism.highlight(code, Prism.languages[lang], lang) } : null), [code, lang, loaded]);
 
   const block = (
     <div className="agent-md-code">
       <div className="agent-md-code-head"><span>{language || "代码"}</span></div>
       <pre className={`agent-md-pre ${styles.code}`}>
-        {html === null ? <code>{code}</code> : <code dangerouslySetInnerHTML={{ __html: html }} />}
+        {markup === null ? <code>{code}</code> : <code dangerouslySetInnerHTML={markup} />}
       </pre>
     </div>
   );

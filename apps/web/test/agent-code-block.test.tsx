@@ -29,6 +29,18 @@ describe("AgentMarkdown 代码高亮", () => {
     expect(screen.getByText("abc")).toBeInTheDocument();
   });
 
+  it("后面追加内容时不重建已着色的节点", () => {
+    const source = fence("js", "const a = 1;");
+    const view = render(<AgentMarkdown text={source} />);
+    const first = view.container.querySelector(".token.keyword");
+
+    view.rerender(<AgentMarkdown text={`${source}
+
+补充说明`} />);
+
+    expect(view.container.querySelector(".token.keyword")).toBe(first);
+  });
+
   it("代码里的标签只作为文本", () => {
     const { container } = render(<AgentMarkdown text={fence("html", "<img src=x onerror=alert(1)>")} />);
 

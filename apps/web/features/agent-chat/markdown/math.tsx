@@ -18,13 +18,13 @@ function useKatex(): Katex | null {
   return katex;
 }
 
-function useMathHtml(value: string, display: boolean): string | null {
+function useMathMarkup(value: string, display: boolean): { __html: string } | null {
   const katex = useKatex();
-  const previous = useRef<string | null>(null);
+  const previous = useRef<{ __html: string } | null>(null);
   return useMemo(() => {
     if (!katex) return null;
     try {
-      previous.current = katex.renderToString(value, { displayMode: display, throwOnError: true, strict: false, trust: false });
+      previous.current = { __html: katex.renderToString(value, { displayMode: display, throwOnError: true, strict: false, trust: false }) };
     } catch {
       return previous.current;
     }
@@ -33,13 +33,13 @@ function useMathHtml(value: string, display: boolean): string | null {
 }
 
 export function MathBlock({ value }: { value: string }) {
-  const html = useMathHtml(value, true);
-  return html === null
+  const markup = useMathMarkup(value, true);
+  return markup === null
     ? <p className="agent-md-p">{value}</p>
-    : <div className={styles.block} dangerouslySetInnerHTML={{ __html: html }} />;
+    : <div className={styles.block} dangerouslySetInnerHTML={markup} />;
 }
 
 export function InlineMath({ value }: { value: string }) {
-  const html = useMathHtml(value, false);
-  return html === null ? <>{value}</> : <span dangerouslySetInnerHTML={{ __html: html }} />;
+  const markup = useMathMarkup(value, false);
+  return markup === null ? <>{value}</> : <span dangerouslySetInnerHTML={markup} />;
 }

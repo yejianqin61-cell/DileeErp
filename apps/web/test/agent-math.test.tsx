@@ -27,6 +27,18 @@ describe("AgentMarkdown 公式", () => {
     expect(screen.getAllByTestId("agent-markdown")[1].querySelector(".katex")).toBeNull();
   });
 
+  it("后面追加内容时不重建已排版的公式节点", async () => {
+    const view = render(<AgentMarkdown text="$$E=mc^2$$" />);
+    await waitFor(() => expect(view.container.querySelector(".katex")).not.toBeNull(), loaded);
+    const first = view.container.querySelector(".katex");
+
+    view.rerender(<AgentMarkdown text={"$$E=mc^2$$
+
+补充说明"} />);
+
+    expect(view.container.querySelector(".katex")).toBe(first);
+  });
+
   it("公式里的链接命令不产生可点击元素", async () => {
     const { container } = render(<><AgentMarkdown text="$$x$$" /><AgentMarkdown text={"$$\\href{javascript:alert(1)}{y}$$"} /></>);
 
