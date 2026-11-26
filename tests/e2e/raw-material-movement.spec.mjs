@@ -152,11 +152,13 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
   const issueRow = movementsPanel(page).getByTestId("data-table-row").filter({ hasText: movementNo });
   await expect(issueRow).toContainText("已过账", { timeout: 15_000 });
 
-  // 6) 库存影响预览 + 单据详情/审计上下文（旧「影响预览」面板已被仓库页的影响弹窗与审计侧栏取代）。
+  // 6) 库存影响 + 单据详情/审计上下文（单据列表行内的两个弹窗）。
   await issueRow.getByRole("button", { name: "影响" }).click();
   const impactDialog = page.getByRole("dialog").filter({ hasText: "库存影响" });
   await expect(impactDialog).toBeVisible({ timeout: 15_000 });
   await expect(impactDialog).toContainText(materialName);
+  await expect(impactDialog.getByTestId("impact-quantity")).toHaveText(/^2(\.0+)?/);
+  await expect(impactDialog.getByTestId("impact-stock")).toHaveText(/^8(\.0+)?$/);
   await page.keyboard.press("Escape");
   await expect(impactDialog).toBeHidden();
   await issueRow.getByRole("button", { name: "审计" }).click();
@@ -164,6 +166,8 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
   await expect(auditSheet).toBeVisible({ timeout: 15_000 });
   await expect(auditSheet).toContainText(movementNo);
   await expect(auditSheet).toContainText(orderNo);
+  const postEvent = auditSheet.getByTestId("data-table-row").filter({ hasText: "过账" });
+  await expect(postEvent).toContainText("原料浏览器测试");
   await page.keyboard.press("Escape");
 
   // 7) 退料并过账：必须填原因（当前流程把原因做成了必填项）。
@@ -190,7 +194,7 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
 
   // 9) 冲销门禁：来源领料已经有下游退料/报废记录，冲销必须被拒绝，单据状态保持已过账。
   await issueRow.getByRole("button", { name: "冲销" }).click();
-  await expect(page.getByRole("dialog").filter({ hasText: "冲销库存单" })).toBeVisible();
+  await expect(page.getByRole("dialog").filter({ hasText: `冲销：${movementNo}` })).toBeVisible();
   await page.getByLabel("冲销原因").fill("验证下游记录冲销门禁");
   await page.getByTestId("action-dialog-submit").click();
   await expect(page.getByTestId("toast-item").last()).toContainText("存在后续退料或报废记录，不能冲销来源领料", { timeout: 15_000 });

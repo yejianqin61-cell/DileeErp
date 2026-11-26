@@ -54,7 +54,12 @@ export class RawMaterialMovementsService {
 
   async auditEvents(id: string) {
     await this.get(id);
-    return this.prisma.auditEvent.findMany({ where: { entityType: "raw_material_movement", entityId: id }, orderBy: { createdAt: "desc" } });
+    const events = await this.prisma.auditEvent.findMany({ where: { entityType: "raw_material_movement", entityId: id }, orderBy: { createdAt: "desc" } });
+    // 审计行只有 actorId（不是 createdBy），全站的姓名拦截器认不到它：这里补姓名，界面不显示 UUID。
+    const actorIds = [...new Set(events.flatMap((event) => (event.actorId ? [event.actorId] : [])))];
+    const actors = actorIds.length ? await this.prisma.user.findMany({ where: { id: { in: actorIds } }, select: { id: true, displayName: true } }) : [];
+    const names = new Map(actors.map((actor) => [actor.id, actor.displayName]));
+    return events.map((event) => ({ ...event, actor_name: (event.actorId ? names.get(event.actorId) : null) ?? null }));
   }
 
   async preview(input: IssueInput, user?: CurrentUser) {
