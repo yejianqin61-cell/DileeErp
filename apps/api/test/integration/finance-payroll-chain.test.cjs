@@ -4,7 +4,7 @@
 //   * 台账按 (employee, period) 唯一定位并用 SELECT ... FOR UPDATE 串行化；
 //   * 应发金额要跨 payroll_ledgers / payroll_payable_entries / salary_payment_allocations 三张表闭合；
 //   * 付款核销后要回写台账与应付状态，并**自动写一条收支流水**（历史缺陷：供应商付款被静默丢掉，
-//     这里断言工资付款这条链路既写成了流水、又落到了正确的收支项目「人 工费」）。
+//     这里断言工资付款这条链路既写成了流水、又落到了会计科目「工资支付」与发放银行上）。
 //
 // 上游（生产日报 → 生产工资）由 production-daily-reports 集成测试覆盖；本用例用**非车间员工**，
 // 以便手工填写基本工资与新增类目（车间员工的基本工资由日报汇总，不允许手工改）。
@@ -80,12 +80,22 @@ test("payroll.ledger.generate_confirm_pay_and_post_cash_flow", async () => {
     const confirmedPayable = await payables.confirm(payable.id, user);
     assert.equal(confirmedPayable.status, "confirmed");
 
-    // 7. 建付款草稿并核销过账
+    // 7. 建付款草稿并核销过账。发放银行必填：缺了它不得留下任何付款单。
+    const bank = fx.track("bank", await prisma.bank.create({
+      data: { bankCode: fx.code("BANK"), bankName: "集成测试银行", accountName: "集成测试账户", accountNumber: fx.code("ACC"), currency: "CNY", ...fx.audit.create() },
+    }));
+    await assert.rejects(
+      () => salaryPayments.create({ payment_date: "2026-09-30", amount: "9900", currency: "CNY", payment_method: "银行转账" }, user),
+      (error) => error.getResponse().code === "SALARY_PAYMENT_BANK_REQUIRED",
+      "工资付款必须指定发放银行",
+    );
+    assert.equal(await prisma.salaryPayment.count({ where: { createdBy: user.id } }), 0, "被拒时不得落库");
     const payment = fx.track("salaryPayment", await salaryPayments.create({
       payment_date: "2026-09-30",
       amount: "9900",
       currency: "CNY",
       payment_method: "银行转账",
+      bank_id: bank.id,
       remark: "集成测试工资付款",
     }, user));
     assert.equal(payment.status, "draft");
@@ -110,16 +120,17 @@ test("payroll.ledger.generate_confirm_pay_and_post_cash_flow", async () => {
     const payableAfter = await prisma.payrollPayableEntry.findUnique({ where: { id: payable.id } });
     assert.equal(payableAfter.status, "paid", "核销后工资应付应变为已付款");
 
-    // 9. 过账即写收支流水：方向支出、项目「人 工费」（字面量含空格，与字典 key 一致）
+    // 9. 过账即写收支流水：方向支出、会计科目「工资支付」、计入发放银行
     const entry = await prisma.cashFlowEntry.findFirst({ where: { sourceType: "salary_payment", sourceId: payment.id, deletedAt: null } });
     assert.ok(entry, "工资付款过账必须自动写一条收支流水（历史缺陷：这里曾整条丢失）");
     assert.equal(entry.direction, "expense");
     assert.equal(entry.currency, "CNY");
     assertDecimalEquals("流水金额等于付款金额", entry.amount, "9900");
     assert.equal(entry.status, "posted");
-    const item = await prisma.dictionaryItem.findUnique({ where: { id: entry.itemId } });
-    assert.equal(item.key, "人 工费", "工资付款要落到「人 工费」项目上");
     fx.track("cashFlowEntry", entry);
+    assert.equal(entry.bankId, bank.id, "工资支出要计入发放银行的账户");
+    const subject = await prisma.accountingSubject.findUnique({ where: { id: entry.subjectId } });
+    assert.equal(subject.name, "工资支付", "工资付款要落到「工资支付」科目上");
 
     // 10. 已付款台账不能被回退/重复核销（状态机护栏）
     //     已付款只能走工资调整单（PAYROLL_PAID_NOT_REOPENABLE）；若状态还没到 paid 但已生成有效应付，

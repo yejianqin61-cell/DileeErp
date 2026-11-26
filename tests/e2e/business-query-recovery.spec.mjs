@@ -81,11 +81,17 @@ test("business-query.refresh_resumes_the_active_run_without_second_post", async 
   });
 
   await openBusinessQuery(page);
-  await submitQuestion(page, `E2E 刷新恢复 ${Date.now()} 有哪些订单？`);
+  const question = `E2E 刷新恢复 ${Date.now()} 有哪些订单？`;
+  // 等提问接口落地再刷新：刷新要恢复的是一个已经建好的 run。
+  const runCreated = page.waitForResponse((response) => response.request().method() === "POST" && /\/business-query\/sessions\/[^/]+\/runs$/.test(new URL(response.url()).pathname));
+  await submitQuestion(page, question);
+  expect((await runCreated).status()).toBe(202);
 
   await page.reload();
 
-  await expect(page.getByTestId("business-query-answer")).toBeVisible({ timeout: 30_000 });
+  // 页面恢复的是最近一个会话，里面可能还有以前的轮次：只认本次提问这一轮（最后一条）。
+  await expect(page.getByTestId("agent-message-user").last()).toHaveText(question, { timeout: 30_000 });
+  await expect(page.getByTestId("agent-message-assistant").last().getByTestId("business-query-answer")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("business-query-phase")).toHaveText("已完成", { timeout: 30_000 });
   expect(createRunPosts).toBe(1);
 });
@@ -149,9 +155,10 @@ test("business-query.429_keeps_the_draft_when_the_real_gate_is_full", async ({ b
       const workerPage = await context.newPage();
       workerContexts.push(context);
       await login(workerPage, worker.credential);
-      const runId = await createActiveRun(workerPage, `E2E 429 占位 ${index} ${Date.now()}`);
-      workers.push({ ...worker, page: workerPage, runId });
+      workers.push({ ...worker, page: workerPage });
     }
+    // 账号与登录全部备好后再一起占位：占位 run 只活几秒，边登录边占位会让先占的名额提前释放。
+    await Promise.all(workers.map(async (worker, index) => { worker.runId = await createActiveRun(worker.page, `E2E 429 占位 ${index} ${Date.now()}`); }));
 
     const question = "429 后必须保留的提问草稿";
     await page.getByLabel("业务问题").fill(question);
@@ -161,7 +168,7 @@ test("business-query.429_keeps_the_draft_when_the_real_gate_is_full", async ({ b
     await expect(page.getByLabel("业务问题")).toHaveValue(question);
   } finally {
     for (const worker of workers) {
-      await cancelRun(worker.page, worker.runId);
+      if (worker.runId) await cancelRun(worker.page, worker.runId);
       await deactivateUser(page, worker.userId);
     }
     await Promise.all(workerContexts.map((context) => context.close()));
@@ -179,7 +186,11 @@ test("business-query.access_revocation_clears_the_live_stream", async ({ browser
     subjectContext = await browser.newContext();
     const subjectPage = await subjectContext.newPage();
     await openBusinessQuery(subjectPage, subject.credential);
+    // 「运行中撤权」要先真的在运行：降权会让该账号的登录态失效，事件流若还没建立，
+    // 订阅拿到的是 401 而不是撤权帧。取消按钮在 run 建好之前就可见，不能当作流已建立。
+    const streamOpened = subjectPage.waitForResponse((response) => /\/business-query\/runs\/[^/]+\/events$/.test(new URL(response.url()).pathname));
     await submitQuestion(subjectPage, `E2E 运行中撤权 ${Date.now()} 有哪些订单？`);
+    expect((await streamOpened).status()).toBe(200);
 
     const downgraded = await api(adminPage, `/api/v1/admin/users/${subject.userId}/roles`, { method: "POST", body: { role_keys: ["qita"] } });
     expect(downgraded.status).toBe(201);

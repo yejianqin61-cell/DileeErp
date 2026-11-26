@@ -1,6 +1,6 @@
 // 采购模块（purchase-orders）HTTP 契约测试 —— 针对**运行中的真实 API**。
 //
-// 覆盖 17 个路由（apps/api/src/modules/procurement/purchase-orders.controller.ts）：
+// 覆盖 18 个路由（apps/api/src/modules/procurement/purchase-orders.controller.ts）：
 //   1. GET    /api/v1/purchase-orders                       列表（order_no 过滤，无分页）
 //   2. GET    /api/v1/purchase-orders/bom-item-status       BOM 每行的累计下单情况（四态，需 bom_id，声明在 :id 之前）
 //   3. POST   /api/v1/purchase-orders                       新建（201）
@@ -17,6 +17,8 @@
 //  14. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
 //  15. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
 //  16. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
+//  17. GET    /api/v1/purchase-orders/warehouses           收货仓库档案（静态，声明在 :id 之前）
+//  18. POST   /api/v1/purchase-orders/:id/items/:itemId/revert-to-plan   行级退回采购计划（需 reason）
 //
 // 环境约束（违反会得到随机失败，见 tests/helpers/api-client.cjs:73-82）：
 //   - 本 API 是**单会话**的：AuthService.login() 先删该用户全部 session 再建新的
@@ -106,7 +108,7 @@ function detailFor(body, field) {
   return detail;
 }
 
-/** 17 个路由的清单，用于逐条打鉴权（route.name 与控制器方法名一一对应）。 */
+/** 18 个路由的清单，用于逐条打鉴权（route.name 与控制器方法名一一对应）。 */
 const ROUTES = [
   { body: undefined, method: "GET", name: "list", path: "/api/v1/purchase-orders" },
   // 2026-09-17 新增：BOM 每行的累计下单情况。必须排在 :id 之前（控制器里也是这么声明的），
@@ -128,6 +130,9 @@ const ROUTES = [
   { body: { quantity: "1", received_date: "2026-01-01" }, method: "POST", name: "receipt", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/items/${UNKNOWN_ITEM_ID}/receipts` },
   { body: { quantity: "1", reason: "probe" }, method: "PATCH", name: "updateReceipt", path: `/api/v1/purchase-orders/receipts/${UNKNOWN_RECEIPT_ID}` },
   { body: { reason: "probe" }, method: "POST", name: "cancelReceipt", path: `/api/v1/purchase-orders/receipts/${UNKNOWN_RECEIPT_ID}/cancel` },
+  // 追加在末尾：伪造 cookie 用例按下标取 ROUTES。
+  { body: undefined, method: "GET", name: "warehouses", path: "/api/v1/purchase-orders/warehouses" },
+  { body: { reason: "probe" }, method: "POST", name: "revertItemToPlan", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/items/${UNKNOWN_ITEM_ID}/revert-to-plan` },
 ];
 
 /** 按 route.method 派发到 apiClient 的对应方法。 */
@@ -231,8 +236,8 @@ test("purchase_orders.anonymous_requests_are_401_on_every_route", async () => {
   // 守卫链是 AuthenticationGuard → ModulePermissionGuard（控制器 :18）。
   // 无 cookie 时 AuthenticationGuard 先抛 UnauthorizedException（auth.service.ts:37），
   // 所以匿名访问**所有**受保护路由都是 401，而不是 ModulePermissionGuard 的 403。
-  assert.equal(ROUTES.length, 17, "本文件必须覆盖控制器的全部 17 个路由");
-  assert.equal(new Set(ROUTES.map((route) => route.name)).size, 17, "路由名不可重复");
+  assert.equal(ROUTES.length, 18, "本文件必须覆盖控制器的全部 18 个路由");
+  assert.equal(new Set(ROUTES.map((route) => route.name)).size, 18, "路由名不可重复");
 
   const anonymous = apiClient(baseUrl);
   for (const route of ROUTES) {
