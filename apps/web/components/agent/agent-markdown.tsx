@@ -3,10 +3,12 @@
 import { Fragment, useMemo, type ReactNode } from "react";
 import type { List, ListItem, Nodes, PhrasingContent, RootContent, Table } from "mdast";
 import { toMdAst } from "../../features/agent-chat/markdown/parse";
+import { useThrottledText } from "../../features/agent-chat/markdown/use-throttled-text";
 import { cn } from "../../lib/utils";
 
 export function AgentMarkdown({ text, className, caret = false }: { text: string; className?: string; caret?: boolean }) {
-  const blocks = useMemo(() => toMdAst(text).children, [text]);
+  const shown = useThrottledText(text, caret);
+  const blocks = useMemo(() => toMdAst(shown).children, [shown]);
 
   return (
     <div className={cn("agent-md", className)} data-testid="agent-markdown">
