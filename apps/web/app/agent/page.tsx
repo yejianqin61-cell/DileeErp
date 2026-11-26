@@ -8,7 +8,7 @@ import { AgentToolbar } from "../../components/agent/agent-toolbar";
 import { ErrorState, LoadingState } from "../../components/feedback/states";
 import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "../../lib/agent-cache";
 import { openAgentCacheStore } from "../../lib/agent-cache-idb";
-import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
+import { ApiClientError, apiDelete, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { initialBusinessQueryState, isBusyPhase, reduce, type QuerySourceView } from "../../lib/business-query-state";
 import { followRunStream } from "../../lib/business-query-stream";
 import { useSessionProfile } from "../../lib/session-context";
@@ -46,6 +46,7 @@ export default function AgentPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [historyTruncated, setHistoryTruncated] = useState(false);
+  const [historyActionError, setHistoryActionError] = useState("");
   const streamAbort = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submitLock = useRef(false);
@@ -262,6 +263,7 @@ export default function AgentPage() {
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     setHistoryError("");
+    setHistoryActionError("");
     try {
       const sessions = (await apiGet<{ sessions: AgentSessionSummary[] }>("/business-query/sessions")).data.sessions;
       const limited = sessions.slice(0, HISTORY_LIMIT);
@@ -269,9 +271,9 @@ export default function AgentPage() {
       const entries = await Promise.all(limited.map(async (session): Promise<AgentHistoryEntry> => {
         try {
           const snapshot = (await apiGet<{ runs: AgentSnapshotRun[] }>(`/business-query/sessions/${encodeURIComponent(session.session_id)}`)).data;
-          return { ...session, title: sessionTitleFromRuns(snapshot.runs), runCount: snapshot.runs.length };
+          return { ...session, title: session.title ?? sessionTitleFromRuns(snapshot.runs), runCount: snapshot.runs.length };
         } catch {
-          return { ...session, title: "（会话内容无法读取）", runCount: 0 };
+          return { ...session, title: session.title ?? "（会话内容无法读取）", runCount: 0 };
         }
       }));
       setHistoryEntries(entries);
@@ -303,6 +305,29 @@ export default function AgentPage() {
       if (current()) setLoading(false);
     }
   }, [hydrateSession, sessionId]);
+
+  const renameSession = useCallback(async (targetSessionId: string, title: string) => {
+    setHistoryActionError("");
+    try {
+      const result = (await apiPatch<{ title: string }>(`/business-query/sessions/${encodeURIComponent(targetSessionId)}`, { title })).data;
+      setHistoryEntries((entries) => entries.map((entry) => (entry.session_id === targetSessionId ? { ...entry, title: result.title } : entry)));
+    } catch (cause) {
+      setHistoryActionError(cause instanceof ApiClientError ? cause.message : "改名失败，请稍后再试");
+    }
+  }, []);
+
+  const deleteSession = useCallback(async (targetSessionId: string) => {
+    setHistoryActionError("");
+    try {
+      await apiDelete(`/business-query/sessions/${encodeURIComponent(targetSessionId)}`);
+      setHistoryEntries((entries) => entries.filter((entry) => entry.session_id !== targetSessionId));
+      if (targetSessionId !== sessionId) return;
+      startNewConversation();
+      if (cache) void clearCachedSession(cache.store, cache.userId);
+    } catch (cause) {
+      setHistoryActionError(cause instanceof ApiClientError ? cause.message : "删除失败，请稍后再试");
+    }
+  }, [cache, sessionId, startNewConversation]);
 
   if (loading) return <div className="agent-loading"><LoadingState label="正在准备迪礼顾问" /></div>;
   if (loadError) return <div className="agent-loading"><ErrorState message={loadError} onRetry={() => window.location.reload()} /></div>;
@@ -339,10 +364,13 @@ export default function AgentPage() {
       entries={historyEntries}
       loading={historyLoading}
       error={historyError}
+      actionError={historyActionError}
       currentSessionId={sessionId}
       truncated={historyTruncated}
       onSelect={(targetSessionId) => { void switchSession(targetSessionId); }}
       onReload={() => { void loadHistory(); }}
+      onRename={(targetSessionId, title) => { void renameSession(targetSessionId, title); }}
+      onDelete={(targetSessionId) => { void deleteSession(targetSessionId); }}
     />
   </>;
 }

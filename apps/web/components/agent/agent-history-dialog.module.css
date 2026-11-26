@@ -1,0 +1,10 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+}

@@ -41,7 +41,7 @@ export type AgentSnapshotRun = {
 };
 
 /** 会话列表项（GET /business-query/sessions）：后端只给这两个时间，没有标题字段。 */
-export type AgentSessionSummary = { session_id: string; created_at: string; updated_at: string };
+export type AgentSessionSummary = { session_id: string; title?: string | null; created_at: string; updated_at: string };
 
 /**
  * 阶段文案：与既有 E2E（tests/e2e/business-query-recovery.spec.mjs）逐字对齐，
