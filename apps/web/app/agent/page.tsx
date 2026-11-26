@@ -6,6 +6,7 @@ import { AgentHistoryDialog, type AgentHistoryEntry } from "../../components/age
 import { AgentThread } from "../../components/agent/agent-thread";
 import { AgentToolbar } from "../../components/agent/agent-toolbar";
 import { ErrorState, LoadingState } from "../../components/feedback/states";
+import { EMPTY_BRANCHES, addBranch, ancestryOf, isBranchState, parentOf, revealing, selectVersion, versionsOf, visiblePath, type BranchState } from "../../features/agent-chat/chat/branches";
 import { browserSessionStore, loadDraft, saveDraft } from "../../features/agent-chat/chat/drafts";
 import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "../../lib/agent-cache";
 import { openAgentCacheStore } from "../../lib/agent-cache-idb";
@@ -31,7 +32,9 @@ const OFFLINE_NOTICE = "无法连接业务查询服务，当前显示本地缓�
 
 const isUnreachable = (cause: unknown) => !(cause instanceof ApiClientError) || cause.code === "REQUEST_ERROR";
 
-type Notice = { message: string; action: "submit" | "reload" | null };
+type Notice = { message: string; action: "submit" | "reload" | null; resend?: Resend };
+
+type Resend = { question: string; parent: string | null };
 
 export default function AgentPage() {
   const [state, dispatch] = useReducer(reduce, initialBusinessQueryState);
@@ -79,6 +82,24 @@ export default function AgentPage() {
     setInput(text);
     keepDraft(sessionId, text);
   }, [keepDraft, sessionId]);
+
+  const [branchMap, setBranchMap] = useState<Record<string, BranchState>>({});
+  const [pendingParent, setPendingParent] = useState<string | null>(null);
+  const branches = (sessionId ? branchMap[sessionId] : undefined) ?? EMPTY_BRANCHES;
+
+  const keepBranches = useCallback((target: string, next: BranchState) => {
+    setBranchMap((map) => ({ ...map, [target]: next }));
+    if (cache) void cache.store.set(`branches:${cache.userId}:${target}`, next).catch(() => undefined);
+  }, [cache]);
+
+  useEffect(() => {
+    if (!cache || !sessionId) return;
+    void cache.store.get(`branches:${cache.userId}:${sessionId}`)
+      .then((stored) => {
+        if (isBranchState(stored)) setBranchMap((map) => (map[sessionId] ? map : { ...map, [sessionId]: stored }));
+      })
+      .catch(() => undefined);
+  }, [cache, sessionId]);
 
   const followStream = useCallback((runId: string, lastSeq: number) => {
     streamAbort.current?.abort();
@@ -223,15 +244,20 @@ export default function AgentPage() {
     if (!loading && !loadError) inputRef.current?.focus();
   }, [loading, loadError]);
 
-  const submit = useCallback(async (questionOverride?: string) => {
-    const question = (questionOverride ?? input).trim();
+  const submit = useCallback(async (questionOverride?: string, resend?: Resend) => {
+    const question = (resend?.question ?? questionOverride ?? input).trim();
+    const fromInput = resend === undefined && questionOverride === undefined;
     if (!question || syncing || isBusyPhase(state.phase) || submitLock.current) return;
     submitLock.current = true;
     setNotice(null);
     const settled = turnFromActiveState(state);
     if (settled) setHistory((previous) => mergeTurns(previous, settled));
+    const ids = mergeTurns(history, settled).map((turn) => turn.runId);
+    const parent = resend ? resend.parent : visiblePath(ids, branches).at(-1) ?? null;
+    const context = ancestryOf(ids, branches, parent);
+    setPendingParent(parent);
     dispatch({ type: "SUBMIT", question, sessionId: sessionId ?? "pending" });
-    if (questionOverride === undefined) setInput("");
+    if (fromInput) setInput("");
     setScrollSignal((value) => value + 1);
     let activeSessionId = sessionId;
     try {
@@ -242,21 +268,25 @@ export default function AgentPage() {
       const created = (await apiPost<{ run_id: string; state: string }>(`/business-query/sessions/${encodeURIComponent(activeSessionId)}/runs`, {
         question,
         client_message_id: createClientMessageId(),
+        context_run_ids: context,
       })).data;
+      keepBranches(activeSessionId, addBranch(branches, created.run_id, parent));
       dispatch({ type: "RUN_CREATED", runId: created.run_id });
-      if (questionOverride === undefined) keepDraft(sessionId, "");
+      if (fromInput) keepDraft(sessionId, "");
       followStream(created.run_id, 0);
     } catch (cause) {
-      setInput(question);
-      if (activeSessionId !== sessionId) keepDraft(sessionId, "");
-      keepDraft(activeSessionId, question);
+      if (!resend) {
+        setInput(question);
+        if (activeSessionId !== sessionId) keepDraft(sessionId, "");
+        keepDraft(activeSessionId, question);
+      }
       dispatch({ type: "RESET" });
       const message = cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : "提交失败，请稍后重试";
-      setNotice({ message, action: "submit" });
+      setNotice({ message, action: "submit", resend });
     } finally {
       submitLock.current = false;
     }
-  }, [followStream, input, keepDraft, sessionId, state, syncing]);
+  }, [branches, followStream, history, input, keepBranches, keepDraft, sessionId, state, syncing]);
 
   const submitRef = useRef(submit);
   useEffect(() => { submitRef.current = submit; }, [submit]);
@@ -366,8 +396,16 @@ export default function AgentPage() {
   if (loading) return <div className="agent-loading"><LoadingState label="正在准备迪礼顾问" /></div>;
   if (loadError) return <div className="agent-loading"><ErrorState message={loadError} onRetry={() => window.location.reload()} /></div>;
 
-  const turns = mergeTurns(history, turnFromActiveState(state));
-  const retryNotice = notice?.action === "submit" ? () => { void submit(); } : notice?.action === "reload" ? () => window.location.reload() : undefined;
+  const allTurns = mergeTurns(history, turnFromActiveState(state));
+  const ids = allTurns.map((turn) => turn.runId);
+  const tracked = ids.includes("pending") ? addBranch(branches, "pending", pendingParent) : branches;
+  const shownBranches = busy && state.runId ? revealing(ids, tracked, state.runId) : tracked;
+  const byId = new Map(allTurns.map((turn) => [turn.runId, turn]));
+  const turns = visiblePath(ids, shownBranches).flatMap((id) => byId.get(id) ?? []);
+  const versions = new Map(turns.map((turn) => [turn.runId, versionsOf(ids, shownBranches, turn.runId)]));
+  const editTurn = (runId: string, question: string) => { void submit(undefined, { question, parent: parentOf(ids, branches, runId) }); };
+  const chooseVersion = (runId: string) => { if (sessionId) keepBranches(sessionId, selectVersion(ids, branches, runId)); };
+  const retryNotice = notice?.action === "submit" ? () => { void submit(undefined, notice.resend); } : notice?.action === "reload" ? () => window.location.reload() : undefined;
 
   return <>
     <div className="agent-workspace" data-testid="page-agent">
@@ -376,7 +414,7 @@ export default function AgentPage() {
         onNewConversation={startNewConversation}
         onOpenHistory={() => { setHistoryOpen(true); void loadHistory(); }}
       />
-      <AgentThread turns={turns} onPickSuggestion={pickSuggestion} onRetryTurn={retryTurn} scrollSignal={scrollSignal} />
+      <AgentThread turns={turns} versions={versions} locked={busy || syncing} onEditTurn={editTurn} onSelectVersion={chooseVersion} onPickSuggestion={pickSuggestion} onRetryTurn={retryTurn} scrollSignal={scrollSignal} />
       <AgentComposer
         value={input}
         onChange={edit}

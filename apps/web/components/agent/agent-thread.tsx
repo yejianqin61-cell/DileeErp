@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
+import type { MessageVersions } from "../../features/agent-chat/chat/branches";
 import type { AgentTurn } from "../../lib/agent-chat";
 import { AgentAssistantMessage, AgentUserMessage } from "./agent-message";
 import { AgentWelcome } from "./agent-welcome";
@@ -16,8 +17,12 @@ import { AgentWelcome } from "./agent-welcome";
  * 滚动写在 rAF 里：同一次回答可能一帧内收到多个 answer_delta，
  * 合并成一次 scrollTop 赋值，避免滚动动画抖动。
  */
-export function AgentThread({ turns, onPickSuggestion, onRetryTurn, scrollSignal }: {
+export function AgentThread({ turns, onPickSuggestion, onRetryTurn, scrollSignal, versions, locked, onEditTurn, onSelectVersion }: {
   turns: AgentTurn[];
+  versions: ReadonlyMap<string, MessageVersions>;
+  locked: boolean;
+  onEditTurn: (runId: string, question: string) => void;
+  onSelectVersion: (runId: string) => void;
   onPickSuggestion: (question: string) => void;
   onRetryTurn: (question: string) => void;
   /** 每次用户发问自增：强制贴底（即使他刚才在看历史）。 */
@@ -60,7 +65,7 @@ export function AgentThread({ turns, onPickSuggestion, onRetryTurn, scrollSignal
         ? <AgentWelcome onPickSuggestion={onPickSuggestion} />
         : <div className="agent-thread" data-testid="agent-thread">
           {turns.map((turn) => <div className="agent-turn" key={turn.runId}>
-            <AgentUserMessage text={turn.question} />
+            <AgentUserMessage text={turn.question} versions={versions.get(turn.runId)} disabled={locked} onEdit={(question) => onEditTurn(turn.runId, question)} onSelectVersion={onSelectVersion} />
             <AgentAssistantMessage turn={turn} onRetry={onRetryTurn} />
           </div>)}
         </div>}

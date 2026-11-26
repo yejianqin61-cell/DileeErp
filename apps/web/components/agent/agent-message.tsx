@@ -1,7 +1,8 @@
 "use client";
 
 import { memo, useEffect, useState } from "react";
-import { AlertTriangle, Check, Copy, RotateCcw, Sparkles } from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Pencil, RotateCcw, Sparkles } from "lucide-react";
+import type { MessageVersions } from "../../features/agent-chat/chat/branches";
 import type { AgentTurn } from "../../lib/agent-chat";
 import { canRetryTurn } from "../../lib/agent-chat";
 import { copyText } from "../../lib/clipboard";
@@ -9,11 +10,37 @@ import { Button } from "../ui/button";
 import { AgentMarkdown } from "./agent-markdown";
 import { AgentSources } from "./agent-sources";
 import { AgentToolSteps } from "./agent-tool-steps";
+import styles from "./agent-message.module.css";
 
 /** 用户消息：右侧浅色圆角气泡。 */
-export function AgentUserMessage({ text }: { text: string }) {
+export function AgentUserMessage({ text, versions, disabled, onEdit, onSelectVersion }: {
+  text: string;
+  versions?: MessageVersions;
+  disabled?: boolean;
+  onEdit?: (question: string) => void;
+  onSelectVersion?: (runId: string) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
   return <div className="agent-msg agent-msg-user" data-testid="agent-message-user">
-    <div className="agent-bubble-user">{text}</div>
+    {draft === null
+      ? <div className={styles.message}>
+        <div className="agent-bubble-user" data-testid="agent-question">{text}</div>
+        <div className={styles.actions}>
+          {versions && versions.ids.length > 1 && <span className={styles.versions}>
+            <Button variant="ghost" size="icon" aria-label="上一个版本" disabled={disabled || versions.index <= 0} onClick={() => onSelectVersion?.(versions.ids[versions.index - 1])}><ChevronLeft size={13} /></Button>
+            <span>{versions.index + 1}/{versions.ids.length}</span>
+            <Button variant="ghost" size="icon" aria-label="下一个版本" disabled={disabled || versions.index >= versions.ids.length - 1} onClick={() => onSelectVersion?.(versions.ids[versions.index + 1])}><ChevronRight size={13} /></Button>
+          </span>}
+          {onEdit && <Button variant="ghost" size="icon" title="编辑" aria-label="编辑" disabled={disabled} onClick={() => setDraft(text)}><Pencil size={13} /></Button>}
+        </div>
+      </div>
+      : <div className={styles.editor}>
+        <textarea className="ui-textarea" aria-label="编辑问题" autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <div className={styles.actions}>
+          <Button variant="secondary" size="sm" onClick={() => setDraft(null)}>取消</Button>
+          <Button size="sm" disabled={disabled || !draft.trim()} onClick={() => { onEdit?.(draft.trim()); setDraft(null); }}>重新发送</Button>
+        </div>
+      </div>}
   </div>;
 }
 
