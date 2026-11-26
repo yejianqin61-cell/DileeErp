@@ -17,6 +17,7 @@ import {
   SECTION_LABELS,
   SURFACE_ROLES,
   surfaceRoleName,
+  SECTION_PATHS,
   SURFACE_SECTIONS,
 } from "./surface-permission.ts";
 
@@ -36,7 +37,10 @@ test("sectionOfPath：一级路径与子路径都归到自己的栏目", () => {
   assert.equal(sectionOfPath("/reorder"), "reorder");
   assert.equal(sectionOfPath("/reorder/articles/27621"), "reorder");
   assert.equal(sectionOfPath("/account"), "account");
-  assert.equal(sectionOfPath("/business-query"), "business-query", "业务查询页归自己的栏目");
+  assert.equal(sectionOfPath("/agent"), "business-query", "顾问页归业务查询栏目");
+  assert.equal(sectionOfPath("/agent/x"), "business-query");
+  assert.equal(sectionOfPath("/agentx"), "dashboard");
+  assert.equal(SECTION_PATHS["business-query"], "/agent");
 });
 
 test("sectionOfPath：/reorder 不会被 /reports 或 /sales 抢走（前缀相近的几个页面）", () => {
@@ -79,8 +83,8 @@ test("canVisitPath：三个范围的规则矩阵（与后端同一张表）", ()
     ["/hr/employees", true, true, false],
     ["/account", true, true, true],
     // 业务查询（2026-10-25）：四类表面角色都能进页面；财务事实可见性由后端数据档位另判。
-    ["/business-query", true, true, true],
-    ["/business-query/old-run", true, true, true],
+    ["/agent", true, true, true],
+    ["/agent/old-run", true, true, true],
   ];
   for (const [path, full, hr, general] of expected) {
     assert.equal(canVisitPath(FULL, path), full, `老板/财务 ${path}`);

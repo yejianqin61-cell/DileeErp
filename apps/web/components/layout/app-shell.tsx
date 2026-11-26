@@ -16,7 +16,7 @@ import { AccessDenied } from "./access-denied";
 const navigation = [
   ["工作台", "/", LayoutDashboard],
   // 迪礼顾问：AI 问答页，四类角色都能进；数据档位由后端另判。
-  ["迪礼顾问", "/business-query", Sparkles],
+  ["迪礼顾问", "/agent", Sparkles],
   ["生产", "/production", Factory],
   ["采购", "/procurement", ClipboardList],
   ["质检", "/qc", ShieldCheck],
@@ -74,7 +74,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* 迪礼顾问是唯一「工作区自己滚动」的页面：把内容区定成视口高度并关掉外层滚动，
           对话区内部再单独滚动（styles 见 globals.css 的 .content-area[data-layout="fixed"]）。
           其它页面保持原来的整页滚动。 */}
-      <main className="content-area" data-testid="app-main" data-layout={pathname.startsWith("/business-query") ? "fixed" : undefined}><SessionContext.Provider value={profile}>{allowed ? children : <AccessDenied profile={profile} pathname={pathname} />}</SessionContext.Provider></main>
+      <main className="content-area" data-testid="app-main" data-layout={pathname === "/agent" || pathname.startsWith("/agent/") ? "fixed" : undefined}><SessionContext.Provider value={profile}>{allowed ? children : <AccessDenied profile={profile} pathname={pathname} />}</SessionContext.Provider></main>
     </div>
   </div>;
 }

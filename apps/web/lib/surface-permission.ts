@@ -60,7 +60,7 @@ export const SECTION_PATHS: Record<SurfaceSection, string> = {
   finance: "/finance",
   hr: "/hr",
   account: "/account",
-  "business-query": "/business-query",
+  "business-query": "/agent",
 };
 
 /** 表面角色：key 与后端 roles.key 一致。 */
@@ -92,7 +92,7 @@ const SECTION_BY_PREFIX: ReadonlyArray<readonly [string, SurfaceSection]> = [
   ["/warehouse", "warehouse"],
   ["/sales", "sales"],
   ["/reorder", "reorder"],
-  ["/business-query", "business-query"],
+  ["/agent", "business-query"],
   ["/customers", "customers"],
   ["/reports", "reports"],
   ["/finance", "finance"],

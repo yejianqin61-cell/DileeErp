@@ -288,14 +288,15 @@ describe("AppShell · 鉴权通过后的导航与主区渲染", () => {
 
   // 迪礼顾问是唯一「工作区自己滚」的页面：内容区要被标成固定高度，
   // 否则整页滚动会带着左侧导航一起动（用户明确要求：长对话只滚消息区）。
-  it("只有 /business-query 把主区标成固定高度布局（data-layout=fixed）", async () => {
-    route.pathname = "/business-query";
+  it("只有 /agent 把主区标成固定高度布局（data-layout=fixed）", async () => {
+    route.pathname = "/agent";
     stubApi(() => me({ surface_sections: [...FULL_SECTIONS, "business-query"] }));
 
     const { rerender } = renderShell(<div data-testid="page-content">对话工作区</div>);
 
     expect(await screen.findByTestId("app-main")).toHaveAttribute("data-layout", "fixed");
     expect(screen.getByTestId("page-content")).toBeVisible();
+    expect(screen.getByTestId("nav-link-agent")).toHaveAttribute("href", "/agent");
 
     route.pathname = "/production";
     rerender(<AppShell><div data-testid="page-content">生产看板</div></AppShell>);

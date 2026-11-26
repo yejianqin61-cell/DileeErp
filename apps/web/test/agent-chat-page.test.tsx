@@ -9,7 +9,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import BusinessQueryPage from "../app/business-query/page";
+import AgentPage from "../app/agent/page";
 
 type StreamEvent = { seq: number; type: string; data: Record<string, unknown> };
 type StreamOptions = { runId: string; lastSeq: number; onOpen?: () => void; onEvent: (event: StreamEvent) => void; onRetry?: () => void };
@@ -57,10 +57,10 @@ function stubBootstrap(runs: Record<string, unknown>[] = [], sessions = [session
   if (sessions.length > 0) api.get.mockResolvedValueOnce({ data: { session_id: String(sessions[0].session_id), runs } });
 }
 
-/** 打开页面并等到工作区真正就绪（加载态没有 page-business-query testid）。 */
+/** 打开页面并等到工作区真正就绪（加载态没有 page-agent testid）。 */
 async function renderPage() {
-  render(<BusinessQueryPage />);
-  await screen.findByTestId("page-business-query");
+  render(<AgentPage />);
+  await screen.findByTestId("page-agent");
   return screen.getByLabelText("业务问题") as HTMLTextAreaElement;
 }
 
