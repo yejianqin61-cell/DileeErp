@@ -37,6 +37,8 @@ function harness({ status = "pending_outbound", documentType = "issue" } = {}) {
     rawMaterialMovementRisk: { create: async () => ({}) },
     inventoryFact: { create: async ({ data }) => { createdFacts.push(data); return data; }, aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal("0") } }) },
     material: { findFirst: async () => ({ id: "material-1", name: "原料A", materialCode: "MAT-1", defaultUnitId: "unit-1", materialType: "raw_material", isActive: true }) },
+    // 跨订单/显式单位领料会按 unit_id 查单位；普通领料也走同一条 previewLines。
+    unit: { findFirst: async () => ({ id: "unit-1", name: "个" }) },
     bomItem: { findFirst: async () => ({ requiredQuantity: new Prisma.Decimal("10"), approvedUsage: null, specificationModel: null, model: null, color: null, unit: "个" }) },
     purchaseOrderItem: { aggregate: async () => ({ _sum: { quantity: new Prisma.Decimal("0") } }) },
     rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: new Prisma.Decimal("0") } }) },
@@ -48,6 +50,7 @@ function harness({ status = "pending_outbound", documentType = "issue" } = {}) {
     rawMaterialMovement: { findFirst: async () => movement },
     productionOrder: { findFirst: async () => order },
     material: tx.material,
+    unit: tx.unit,
     bomItem: tx.bomItem,
     purchaseOrderItem: tx.purchaseOrderItem,
     rawMaterialInbound: tx.rawMaterialInbound,

@@ -258,10 +258,14 @@ export class RawMaterialMovementsService {
         // 不能用默认单位复核余额，否则张/个混账时会误判库存不足。
         const lockedPreview = await this.previewLines(lockedOrder, this.linesWithCrossOrderSource(current), tx, id);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: `${label}会造成原料库存不足`, details: [] });
-        // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined），按 material_id + unit_id + supplier_id 关联 current.lines
-        const dbLineByMaterial = new Map(current.lines.map((dbLine) => [`${dbLine.materialId}|${dbLine.unitId}|${dbLine.supplierId ?? "__none__"}`, dbLine]));
+        // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined）。
+        // 优先按 material_id + unit_id + supplier_id 精确关联；预览行没带 unit_id 的旧路径
+        // 回退到 material_id + supplier_id，避免风险行变成“无归属”。
+        const dbLineByMaterialUnit = new Map(current.lines.map((dbLine) => [`${dbLine.materialId}|${dbLine.unitId}|${dbLine.supplierId ?? "__none__"}`, dbLine]));
+        const dbLineByMaterial = new Map(current.lines.map((dbLine) => [`${dbLine.materialId}|${dbLine.supplierId ?? "__none__"}`, dbLine]));
         const lockedRisks = lockedPreview.lines.flatMap((line) => line.risks.map((risk) => {
-          const dbLine = dbLineByMaterial.get(`${line.material_id}|${line.unit_id}|${line.supplier_id ?? "__none__"}`);
+          const dbLine = dbLineByMaterialUnit.get(`${line.material_id}|${line.unit_id}|${line.supplier_id ?? "__none__"}`)
+            ?? dbLineByMaterial.get(`${line.material_id}|${line.supplier_id ?? "__none__"}`);
           return { line_id: dbLine?.id ?? null, risk_type: risk.type, context: risk.context };
         }));
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
