@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { Loader2, Pencil, Trash2 } from "lucide-react";
+import { AgentSettingsContext } from "../../features/agent-chat/settings/settings";
+import themeStyles from "../../features/agent-chat/settings/theme.module.css";
 import type { AgentSessionSummary } from "../../lib/agent-chat";
 import { formatBeijingShort } from "../../lib/audit-time";
 import { Button } from "../ui/button";
@@ -28,6 +30,7 @@ export function AgentHistoryDialog({
 }) {
   const [editing, setEditing] = useState<{ sessionId: string; title: string } | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const { theme } = useContext(AgentSettingsContext);
 
   useEffect(() => {
     if (open) return;
@@ -46,7 +49,7 @@ export function AgentHistoryDialog({
 
   return <>
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid="agent-history-dialog" onEscapeKeyDown={(event) => { if (!editing) return; event.preventDefault(); setEditing(null); }}>
+      <DialogContent className={themeStyles.root} data-agent-theme={theme} data-testid="agent-history-dialog" onEscapeKeyDown={(event) => { if (!editing) return; event.preventDefault(); setEditing(null); }}>
         <DialogHeader>
           <DialogTitle>历史记录</DialogTitle>
           <DialogDescription>只显示你自己的会话；切换会话会按当前数据档位重新读取内容。</DialogDescription>
@@ -80,7 +83,7 @@ export function AgentHistoryDialog({
       </DialogContent>
     </Dialog>
     <Dialog open={removing !== null} onOpenChange={(next) => { if (!next) setRemoving(null); }}>
-      <DialogContent role="alertdialog">
+      <DialogContent role="alertdialog" className={themeStyles.root} data-agent-theme={theme}>
         <DialogHeader>
           <DialogTitle>删除这个会话？</DialogTitle>
           <DialogDescription>删除后你看不到这个会话。</DialogDescription>

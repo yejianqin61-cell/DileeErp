@@ -17,12 +17,12 @@ function loadMermaid(): Promise<Mermaid> {
 
 export const sanitizeMermaid = (code: string) => code.replace(/<((?:img|image)\s+)/gi, "&lt;$1");
 
-export function renderMermaid(code: string, isCancelled: () => boolean): Promise<string | null> {
+export function renderMermaid(code: string, isCancelled: () => boolean, theme: "default" | "dark" = "default"): Promise<string | null> {
   const result = renderQueue.then(async () => {
     if (isCancelled() || !code.trim()) return null;
     const mermaid = await loadMermaid();
     if (isCancelled()) return null;
-    mermaid.initialize({ theme: "default", securityLevel: "strict", startOnLoad: false, suppressErrorRendering: true });
+    mermaid.initialize({ theme, securityLevel: "strict", startOnLoad: false, suppressErrorRendering: true });
     const { svg } = await mermaid.render(`agent-mermaid-${nextId++}`, sanitizeMermaid(code));
     return isCancelled() ? null : svg;
   });

@@ -8,6 +8,8 @@ import { AgentToolbar } from "../../components/agent/agent-toolbar";
 import { ErrorState, LoadingState } from "../../components/feedback/states";
 import { EMPTY_BRANCHES, addBranch, ancestryOf, isBranchState, parentOf, revealing, selectVersion, versionsOf, visiblePath, type BranchState } from "../../features/agent-chat/chat/branches";
 import { browserSessionStore, loadDraft, saveDraft } from "../../features/agent-chat/chat/drafts";
+import { AgentSettingsContext, useAgentSettingsState } from "../../features/agent-chat/settings/settings";
+import themeStyles from "../../features/agent-chat/settings/theme.module.css";
 import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "../../lib/agent-cache";
 import { openAgentCacheStore } from "../../lib/agent-cache-idb";
 import { ApiClientError, apiDelete, apiGet, apiPatch, apiPost } from "../../lib/api-client";
@@ -38,6 +40,7 @@ type Resend = { question: string; parent: string | null };
 
 export default function AgentPage() {
   const [state, dispatch] = useReducer(reduce, initialBusinessQueryState);
+  const appearance = useAgentSettingsState();
   const [history, setHistory] = useState<AgentTurn[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -393,8 +396,10 @@ export default function AgentPage() {
     }
   }, [cache, keepDraft, sessionId, startNewConversation]);
 
-  if (loading) return <div className="agent-loading"><LoadingState label="正在准备迪礼顾问" /></div>;
-  if (loadError) return <div className="agent-loading"><ErrorState message={loadError} onRetry={() => window.location.reload()} /></div>;
+  const themed = { "data-agent-theme": appearance.theme };
+
+  if (loading) return <div className={`agent-loading ${themeStyles.root}`} {...themed}><LoadingState label="正在准备迪礼顾问" /></div>;
+  if (loadError) return <div className={`agent-loading ${themeStyles.root}`} {...themed}><ErrorState message={loadError} onRetry={() => window.location.reload()} /></div>;
 
   const allTurns = mergeTurns(history, turnFromActiveState(state));
   const ids = allTurns.map((turn) => turn.runId);
@@ -407,8 +412,8 @@ export default function AgentPage() {
   const chooseVersion = (runId: string) => { if (sessionId) keepBranches(sessionId, selectVersion(ids, branches, runId)); };
   const retryNotice = notice?.action === "submit" ? () => { void submit(undefined, notice.resend); } : notice?.action === "reload" ? () => window.location.reload() : undefined;
 
-  return <>
-    <div className="agent-workspace" data-testid="page-agent">
+  return <AgentSettingsContext.Provider value={appearance}>
+    <div className={`agent-workspace ${themeStyles.root}`} data-testid="page-agent" {...themed}>
       <AgentToolbar
         busy={busy}
         onNewConversation={startNewConversation}
@@ -444,5 +449,5 @@ export default function AgentPage() {
       onRename={(targetSessionId, title) => { void renameSession(targetSessionId, title); }}
       onDelete={(targetSessionId) => { void deleteSession(targetSessionId); }}
     />
-  </>;
+  </AgentSettingsContext.Provider>;
 }

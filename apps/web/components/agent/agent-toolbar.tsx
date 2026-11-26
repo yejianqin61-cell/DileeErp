@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { History, LayoutDashboard, Plus, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
+import { AgentSettingsMenu } from "./agent-settings-menu";
 
 /**
  * Agent 工作区顶部工具栏：固定不滚动，只放身份与两个**真的能用**的动作。
@@ -23,6 +24,7 @@ export function AgentToolbar({ busy, onNewConversation, onOpenHistory }: { busy:
     <div className="agent-toolbar-actions">
       <Button variant="ghost" size="sm" onClick={onOpenHistory} disabled={busy} title={blockedHint ?? "查看本人的历史会话"} data-testid="agent-history-open"><History size={14} />历史记录</Button>
       <Button variant="secondary" size="sm" onClick={onNewConversation} disabled={busy} title={blockedHint ?? "开始一段新的对话"} data-testid="agent-new-conversation"><Plus size={14} />新建对话</Button>
+      <AgentSettingsMenu />
     </div>
   </header>;
 }
