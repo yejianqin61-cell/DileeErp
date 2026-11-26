@@ -228,7 +228,7 @@ async function cachedRunCount(page) {
       const database = request.result;
       if (!database.objectStoreNames.contains("kv")) return resolve(0);
       const all = database.transaction("kv", "readonly").objectStore("kv").getAll();
-      all.onsuccess = () => { database.close(); resolve(all.result.reduce((total, entry) => total + entry.runs.length, 0)); };
+      all.onsuccess = () => { database.close(); resolve(all.result.reduce((total, entry) => total + (entry.runs?.length ?? 0), 0)); };
       all.onerror = () => resolve(0);
     };
   }));
