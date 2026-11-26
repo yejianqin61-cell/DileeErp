@@ -4,7 +4,7 @@
     "group": "gap",
     "question": "按供应商汇总本月采购金额",
     "gap": {
-      "class": "gap",
+      "class": "permission",
       "nearest": "get_payables"
     },
     "expect": {
@@ -55,7 +55,7 @@
     "group": "gap",
     "question": "本月所有订单的应收账款总额是多少",
     "gap": {
-      "class": "gap",
+      "class": "permission",
       "nearest": "get_receivables"
     },
     "expect": {
@@ -140,7 +140,7 @@
     "group": "gap",
     "question": "管理费用科目本月发生额是多少",
     "gap": {
-      "class": "gap",
+      "class": "permission",
       "nearest": "get_order_cost_profit"
     },
     "expect": {
@@ -157,7 +157,7 @@
     "group": "gap",
     "question": "全公司各订单的毛利排名",
     "gap": {
-      "class": "gap",
+      "class": "permission",
       "nearest": "get_order_cost_profit"
     },
     "expect": {

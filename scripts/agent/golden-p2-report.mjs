@@ -106,6 +106,7 @@ export function renderP2(result, meta = {}) {
     `- 漂移率 ${percent(gap.driftRate)}：最近邻与题集标注不一致 ${gap.mismatched} / ${gap.declarations} 条放行声明。`,
     `- 真缺口题用例轮次 ${gap.gapRuns} 个，其中 ${gap.undeclared} 个没有任何放行声明。`,
     `- 误报率 ${percent(gap.falsePositiveRate)}：干扰题出现放行声明 ${gap.falsePositives} / ${gap.decoyRuns} 个用例轮次。`,
+    ...(gap.permissionRuns ? [`- 权限题出现放行声明 ${gap.permissionDeclared} / ${gap.permissionRuns} 个用例轮次，应为 0。`] : []),
     "",
     "## 6. 未通过清单",
     "",

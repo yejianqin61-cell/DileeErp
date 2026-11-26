@@ -56,3 +56,13 @@ test("只接受库名带 test 的连接串", () => {
     assert.throws(() => assertTestDatabaseUrl(url), /GOLDEN_DATABASE_URL/, String(url));
   }
 });
+
+test("权限题单独计，不进漂移、漏报与误报", () => {
+  const result = gapMetrics([entry("permission", [declare("list_documents")]), entry("permission", []), entry("permission", [declare("x")], "unknown")]);
+  assert.equal(result.permissionRuns, 2);
+  assert.equal(result.permissionDeclared, 1);
+  assert.equal(result.declarations, 0);
+  assert.equal(result.gapRuns, 0);
+  assert.equal(result.undeclared, 0);
+  assert.equal(result.falsePositives, 0);
+});

@@ -69,3 +69,10 @@ test("报告写出漂移率与误报率的分子分母", () => {
   assert.match(text, /误报率[^\n]*0 \/ 0/);
   assert.match(text, /落在 gap-01。/);
 });
+
+test("有权限题时报告写出其声明数，没有时不写这一行", () => {
+  const declared = entry("gap-01", 1, { gap: { class: "permission", nearest: "get_payables" } });
+  declared.outcome.gapDeclarations = [{ nearest_operation: "list_documents", missing: "filter" }];
+  assert.match(renderP2(evaluate({ entries: [declared], baseline })), /权限题[^\n]*1 \/ 1/);
+  assert.doesNotMatch(renderP2(evaluate({ entries: full(), baseline })), /权限题/);
+});

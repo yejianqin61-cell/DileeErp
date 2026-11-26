@@ -20,6 +20,7 @@ export function gapMetrics(entries) {
   const scored = entries.filter((entry) => entry.caseDef.gap && entry.outcome.terminal !== "unknown");
   const gap = scored.filter((entry) => entry.caseDef.gap.class === "gap");
   const decoy = scored.filter((entry) => entry.caseDef.gap.class === "decoy");
+  const permission = scored.filter((entry) => entry.caseDef.gap.class === "permission");
   const declaredBy = (entry) => entry.outcome.gapDeclarations ?? [];
   const declarations = gap.flatMap((entry) => declaredBy(entry).map((item) => ({ ...item, expected: entry.caseDef.gap.nearest })));
   const mismatched = declarations.filter((item) => item.nearest_operation !== item.expected).length;
@@ -31,6 +32,8 @@ export function gapMetrics(entries) {
     undeclared: gap.filter((entry) => declaredBy(entry).length === 0).length,
     gapRuns: gap.length,
     decoyRuns: decoy.length,
+    permissionRuns: permission.length,
+    permissionDeclared: permission.filter((entry) => declaredBy(entry).length > 0).length,
     falsePositives,
     falsePositiveRate: ratio(falsePositives, decoy.length),
   };

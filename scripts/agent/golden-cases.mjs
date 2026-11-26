@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 export const GROUPS = ["entry", "miss", "relation", "followup", "permission", "finance_positive", "known_answer", "gap"];
 
-export const GAP_CLASSES = ["gap", "decoy"];
+export const GAP_CLASSES = ["gap", "permission", "decoy"];
 
 export const FULL_ACCOUNT_GROUPS = ["finance_positive"];
 
