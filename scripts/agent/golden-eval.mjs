@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { FULL_ACCOUNT_GROUPS, loadCases, selectCases } from "./golden-cases.mjs";
 import { assertTestDatabaseUrl, readDeclarations } from "./golden-gap-metrics.mjs";
 import { judgeAll } from "./golden-judge.mjs";
+import { evaluate, renderP2 } from "./golden-p2-report.mjs";
 import { renderMarkdown, summarize } from "./golden-report.mjs";
 import { runReps } from "./golden-reps.mjs";
 import { fetchBaselineDocs, login, missingBaseline, runCase } from "./golden-runner.mjs";
@@ -58,6 +59,19 @@ function buildReport({ judged, entries, docCount, apiBase, runAt, analysis, comp
   return { summary, markdown };
 }
 
+function writeP2Report({ argv, entries, runAt, apiBase, analysis, outPath }) {
+  const baseline = JSON.parse(readFileSync(readFlag(argv, "--baseline"), "utf8"));
+  const result = evaluate({ entries, baseline });
+  const markdown = renderP2(result, {
+    runAt,
+    apiBase,
+    analysis,
+    model: process.env.GOLDEN_MODEL ?? "deepseek-chat（AGENT_LLM_PROVIDER=deepseek）",
+    baselineNote: process.env.GOLDEN_BASELINE_NOTE,
+  });
+  writeReport(outPath, markdown, { fail: result.criteria.filter((item) => !item.met).length });
+}
+
 function writeReport(outPath, markdown, summary) {
   if (outPath) {
     writeFileSync(outPath, markdown, "utf8");
@@ -90,6 +104,14 @@ async function main() {
       : snapshot.judged.map((row) => ({ ...row, failureCodes: row.failureCodes ?? [] }));
     if (entries.length > 0 && snapshot.judged.some((row, index) => row.verdict !== judged[index]?.verdict)) {
       process.stderr.write("注意：快照里存的判定与当前用例期望不一致，已按当前期望重判（用例期望改过、模型输出没变）\n");
+    }
+    if (entries.some((entry) => entry.rep)) {
+      if (!readFlag(argv, "--baseline")) {
+        console.error("多轮快照要用 --baseline 指向 P1 快照");
+        process.exit(2);
+      }
+      writeP2Report({ argv, entries, runAt: snapshot.runAt, apiBase: snapshot.apiBase, analysis, outPath });
+      return;
     }
     const { summary, markdown } = buildReport({
       judged,
@@ -203,6 +225,10 @@ async function main() {
   await database?.$disconnect();
   const judged = judgeRows(entries);
 
+  if (reps && readFlag(argv, "--baseline")) {
+    writeP2Report({ argv, entries, runAt, apiBase, analysis, outPath });
+    return;
+  }
   const { summary, markdown } = buildReport({ judged, entries, docCount: present.size, apiBase, runAt, analysis });
   writeReport(outPath, markdown, summary);
 }
