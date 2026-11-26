@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
     if (dev) config.cache = false;
     return config;
   },
+  async redirects() {
+    return [{ source: "/business-query/:path*", destination: "/agent", permanent: true }];
+  },
   async rewrites() {
     return [{ source: "/api/v1/:path*", destination: `${process.env.API_INTERNAL_URL ?? "http://localhost:3001"}/api/v1/:path*` }];
   },
