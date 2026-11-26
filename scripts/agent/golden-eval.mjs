@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { FULL_ACCOUNT_GROUPS, loadCases, selectCases } from "./golden-cases.mjs";
 import { judgeAll } from "./golden-judge.mjs";
 import { renderMarkdown, summarize } from "./golden-report.mjs";
+import { runReps } from "./golden-reps.mjs";
 import { fetchBaselineDocs, login, missingBaseline, runCase } from "./golden-runner.mjs";
 
 const UNCOVERED = [
@@ -102,6 +103,19 @@ async function main() {
     return;
   }
 
+  const resumePath = readFlag(argv, "--resume");
+  const previous = resumePath && existsSync(resumePath) ? JSON.parse(readFileSync(resumePath, "utf8")) : undefined;
+  const repsFlag = readFlag(argv, "--reps") ?? previous?.reps;
+  const reps = repsFlag === undefined ? 0 : Number(repsFlag);
+  if (repsFlag !== undefined && (!Number.isInteger(reps) || reps < 1)) {
+    console.error("--reps 必须是正整数");
+    process.exit(2);
+  }
+  if (reps && !(readFlag(argv, "--json-out") ?? resumePath)) {
+    console.error("多轮运行必须给 --json-out 或 --resume");
+    process.exit(2);
+  }
+
   const groups = readGroups(argv);
   const apiBase = process.env.GOLDEN_API_BASE ?? "http://127.0.0.1:3111/api/v1";
   const username = process.env.GOLDEN_USERNAME ?? "admin";
@@ -130,27 +144,52 @@ async function main() {
   const cookieFor = (caseDef) => (FULL_ACCOUNT_GROUPS.includes(caseDef.group) ? fullCookie : defaultCookie);
   const present = await fetchBaselineDocs({ fetchImpl: fetch, apiBase, cookie: defaultCookie });
 
-  const runAt = new Date().toISOString();
-  const entries = [];
-  for (const [index, caseDef] of cases.entries()) {
+  const runAt = previous?.runAt ?? new Date().toISOString();
+  const runOne = async (caseDef) => {
     const missing = missingBaseline(caseDef, present);
     const outcome = missing.length > 0
       ? { terminal: "unknown", errorCode: null, ops: [], failureCodes: [], sources: [], answer: "", toolCalls: 0, answerChunks: 0, durationMs: 0 }
       : await runCase({ fetchImpl: fetch, apiBase, cookie: cookieFor(caseDef), caseDef, signal: AbortSignal.timeout(600_000) });
-    entries.push({ caseDef, outcome, missing });
-    process.stderr.write(`[${index + 1}/${cases.length}] ${caseDef.id} -> ${outcome.terminal}${missing.length > 0 ? " (baseline_missing)" : ""}\n`);
-  }
+    return { outcome, missing };
+  };
+  const judgeRows = (list) => list.map((entry) => ({ ...judgeAll([entry])[0], failureCodes: entry.outcome.failureCodes, modelSteps: entry.outcome.modelSteps ?? 0, ...(entry.rep ? { rep: entry.rep } : {}) }));
+  const jsonOut = readFlag(argv, "--json-out") ?? resumePath;
+  const snapshotText = (list) => `${JSON.stringify({ runAt, apiBase, docCount: present.size, ...(reps ? { reps } : {}), judged: judgeRows(list), entries: list }, null, 2)}\n`;
+  const save = (list) => {
+    writeFileSync(`${jsonOut}.tmp`, snapshotText(list), "utf8");
+    renameSync(`${jsonOut}.tmp`, jsonOut);
+  };
 
-  const judged = entries.map((entry) => ({ ...judgeAll([entry])[0], failureCodes: entry.outcome.failureCodes, modelSteps: entry.outcome.modelSteps ?? 0 }));
-  const jsonOut = readFlag(argv, "--json-out");
-  if (jsonOut) {
-    writeFileSync(
-      jsonOut,
-      `${JSON.stringify({ runAt, apiBase, docCount: present.size, judged, entries }, null, 2)}\n`,
-      "utf8",
-    );
-    process.stderr.write(`原始结果已写入 ${jsonOut}\n`);
+  let entries = [];
+  if (reps) {
+    let done = 0;
+    entries = await runReps({
+      cases,
+      reps,
+      previous: previous?.entries ?? [],
+      save: (list) => {
+        save(list);
+        const last = list.length;
+        done += 1;
+        process.stderr.write(`[本次第 ${done} 项，累计 ${last}/${cases.length * reps}]\n`);
+      },
+      runOne: async (caseDef, rep) => {
+        const result = await runOne(caseDef);
+        process.stderr.write(`第 ${rep} 轮 ${caseDef.id} -> ${result.outcome.terminal}${result.missing.length > 0 ? " (baseline_missing)" : ""}\n`);
+        return result;
+      },
+    });
+    save(entries);
+  } else {
+    for (const [index, caseDef] of cases.entries()) {
+      const { outcome, missing } = await runOne(caseDef);
+      entries.push({ caseDef, outcome, missing });
+      process.stderr.write(`[${index + 1}/${cases.length}] ${caseDef.id} -> ${outcome.terminal}${missing.length > 0 ? " (baseline_missing)" : ""}\n`);
+    }
+    if (jsonOut) writeFileSync(jsonOut, snapshotText(entries), "utf8");
   }
+  if (jsonOut) process.stderr.write(`原始结果已写入 ${jsonOut}\n`);
+  const judged = judgeRows(entries);
 
   const { summary, markdown } = buildReport({ judged, entries, docCount: present.size, apiBase, runAt, analysis });
   writeReport(outPath, markdown, summary);
