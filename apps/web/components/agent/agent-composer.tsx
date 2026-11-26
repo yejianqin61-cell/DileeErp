@@ -14,7 +14,7 @@ import { Loader2, SendHorizonal, Square } from "lucide-react";
  *   * 提交失败/忙碌时错误提示贴在输入框上方，草稿留在输入框里可直接重试。
  */
 export function AgentComposer({
-  value, onChange, onSubmit, onStop, busy, canStop, disabled, phaseLabel, notice, onRetryNotice, onDismissNotice, inputRef,
+  value, onChange, onSubmit, onStop, busy, canStop, disabled, sendDisabled, phaseLabel, notice, onRetryNotice, onDismissNotice, inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -26,6 +26,7 @@ export function AgentComposer({
   canStop: boolean;
   /** 会话还没就绪（初次加载）时禁止输入。 */
   disabled?: boolean;
+  sendDisabled?: boolean;
   phaseLabel: string;
   notice: string | null;
   onRetryNotice?: () => void;
@@ -49,7 +50,7 @@ export function AgentComposer({
     // 否则打「订单」按 Enter 选字会把半截问题发出去。
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     event.preventDefault();
-    if (busy || disabled || !value.trim()) return;
+    if (busy || disabled || sendDisabled || !value.trim()) return;
     onSubmit();
   }
 
@@ -82,7 +83,7 @@ export function AgentComposer({
           <div className="agent-input-actions">
             {busy
               ? <button type="button" className="agent-stop" onClick={onStop} disabled={!canStop} title={canStop ? "停止生成" : "正在提交，稍候可停止"} aria-label="停止生成" data-testid="business-query-cancel"><Square size={12} fill="currentColor" /></button>
-              : <button type="button" className="agent-send" onClick={onSubmit} disabled={disabled || !value.trim()} title="发送" aria-label="发送" data-testid="business-query-submit"><SendHorizonal size={16} /></button>}
+              : <button type="button" className="agent-send" onClick={onSubmit} disabled={disabled || sendDisabled || !value.trim()} title="发送" aria-label="发送" data-testid="business-query-submit"><SendHorizonal size={16} /></button>}
           </div>
         </div>
       </div>

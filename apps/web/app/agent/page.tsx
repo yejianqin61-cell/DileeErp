@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { AgentComposer } from "../../components/agent/agent-composer";
 import { AgentHistoryDialog, type AgentHistoryEntry } from "../../components/agent/agent-history-dialog";
 import { AgentThread } from "../../components/agent/agent-thread";
 import { AgentToolbar } from "../../components/agent/agent-toolbar";
 import { ErrorState, LoadingState } from "../../components/feedback/states";
+import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "../../lib/agent-cache";
+import { openAgentCacheStore } from "../../lib/agent-cache-idb";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { initialBusinessQueryState, isBusyPhase, reduce, type QuerySourceView } from "../../lib/business-query-state";
 import { followRunStream } from "../../lib/business-query-stream";
+import { useSessionProfile } from "../../lib/session-context";
 import {
   PHASE_LABELS,
   createClientMessageId,
@@ -44,6 +47,15 @@ export default function AgentPage() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submitLock = useRef(false);
   const busy = isBusyPhase(state.phase);
+  const [syncing, setSyncing] = useState(false);
+  const epoch = useRef(0);
+  const profile = useSessionProfile();
+  const userId = profile?.id ?? null;
+  const level = cacheAccessLevel(profile?.role_keys ?? []);
+  const cache = useMemo(() => {
+    const store = userId ? openAgentCacheStore() : null;
+    return store && userId ? { store, userId, level } : null;
+  }, [userId, level]);
 
   const followStream = useCallback((runId: string, lastSeq: number) => {
     streamAbort.current?.abort();
@@ -64,8 +76,10 @@ export default function AgentPage() {
     });
   }, []);
 
-  const hydrateSession = useCallback(async (targetSessionId: string) => {
+  const hydrateSession = useCallback(async (targetSessionId: string, accept: () => boolean) => {
     const snapshot = (await apiGet<{ session_id: string; runs: AgentSnapshotRun[] }>(`/business-query/sessions/${encodeURIComponent(targetSessionId)}`)).data;
+    if (!accept()) return;
+    if (cache) void writeCachedSession(cache.store, cache.userId, targetSessionId, snapshot.runs);
     const lastRun = snapshot.runs.at(-1);
     setHistory(snapshot.runs.slice(0, -1).map(turnFromSnapshotRun));
     if (!lastRun) {
@@ -85,29 +99,56 @@ export default function AgentPage() {
       },
     });
     if (!isTerminalRunState(lastRun.state)) followStream(lastRun.run_id, lastRun.latest_seq);
-  }, [followStream]);
+  }, [cache, followStream]);
 
   useEffect(() => {
     let cancelled = false;
+    let answered = false;
+    const ticket = ++epoch.current;
+    const current = () => !cancelled && ticket === epoch.current;
+    const accept = () => {
+      if (!current()) return false;
+      answered = true;
+      return true;
+    };
+    if (cache) {
+      setSyncing(true);
+      void readCachedSession(cache.store, cache.userId, cache.level).then((cached) => {
+        if (!cached || answered || !current()) return;
+        setSessionId(cached.session_id);
+        setHistory(cached.runs.map(turnFromSnapshotRun));
+        setLoading(false);
+      });
+    }
     void (async () => {
       try {
         const sessions = (await apiGet<{ sessions: AgentSessionSummary[] }>("/business-query/sessions")).data.sessions;
-        if (cancelled) return;
+        if (!current()) return;
         const latest = sessions[0];
-        if (!latest) return;
-        setSessionId(latest.session_id);
-        await hydrateSession(latest.session_id);
+        if (!latest) {
+          accept();
+          if (cache) void clearCachedSession(cache.store, cache.userId);
+          setSessionId(null);
+          setHistory([]);
+        } else {
+          setSessionId(latest.session_id);
+          await hydrateSession(latest.session_id, accept);
+        }
+        if (current()) setSyncing(false);
       } catch (cause) {
-        if (!cancelled) setLoadError(cause instanceof ApiClientError ? cause.message : "无法连接业务查询服务");
+        if (current()) {
+          answered = true;
+          setLoadError(cause instanceof ApiClientError ? cause.message : "无法连接业务查询服务");
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (current()) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
       streamAbort.current?.abort();
     };
-  }, [hydrateSession]);
+  }, [cache, hydrateSession]);
 
   useEffect(() => {
     if (!loading && !loadError) inputRef.current?.focus();
@@ -115,7 +156,7 @@ export default function AgentPage() {
 
   const submit = useCallback(async (questionOverride?: string) => {
     const question = (questionOverride ?? input).trim();
-    if (!question || isBusyPhase(state.phase) || submitLock.current) return;
+    if (!question || syncing || isBusyPhase(state.phase) || submitLock.current) return;
     submitLock.current = true;
     setNotice(null);
     const settled = turnFromActiveState(state);
@@ -143,7 +184,7 @@ export default function AgentPage() {
     } finally {
       submitLock.current = false;
     }
-  }, [followStream, input, sessionId, state]);
+  }, [followStream, input, sessionId, state, syncing]);
 
   const submitRef = useRef(submit);
   useEffect(() => { submitRef.current = submit; }, [submit]);
@@ -168,6 +209,8 @@ export default function AgentPage() {
 
   const startNewConversation = useCallback(() => {
     if (isBusyPhase(state.phase)) return;
+    epoch.current += 1;
+    setSyncing(false);
     streamAbort.current?.abort();
     setNotice(null);
     setInput("");
@@ -203,6 +246,9 @@ export default function AgentPage() {
   const switchSession = useCallback(async (targetSessionId: string) => {
     setHistoryOpen(false);
     if (targetSessionId === sessionId) return;
+    const ticket = ++epoch.current;
+    const current = () => ticket === epoch.current;
+    setSyncing(false);
     streamAbort.current?.abort();
     setNotice(null);
     setSessionId(targetSessionId);
@@ -211,11 +257,11 @@ export default function AgentPage() {
     setLoadError("");
     setLoading(true);
     try {
-      await hydrateSession(targetSessionId);
+      await hydrateSession(targetSessionId, current);
     } catch (cause) {
-      setLoadError(cause instanceof ApiClientError ? cause.message : "无法读取该会话");
+      if (current()) setLoadError(cause instanceof ApiClientError ? cause.message : "无法读取该会话");
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [hydrateSession, sessionId]);
 
@@ -240,6 +286,7 @@ export default function AgentPage() {
         onStop={() => { void cancel(); }}
         busy={busy}
         canStop={Boolean(state.runId)}
+        sendDisabled={syncing}
         phaseLabel={PHASE_LABELS[state.phase]}
         notice={notice?.message ?? null}
         onRetryNotice={retryNotice}
