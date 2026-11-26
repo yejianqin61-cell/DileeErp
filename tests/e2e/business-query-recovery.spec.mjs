@@ -21,8 +21,8 @@ async function login(page, credentials = { username, password }) {
 
 async function openBusinessQuery(page, credentials) {
   await login(page, credentials);
-  await page.goto("/business-query");
-  await expect(page.getByTestId("page-business-query")).toBeVisible({ timeout: 15_000 });
+  await page.goto("/agent");
+  await expect(page.getByTestId("page-agent")).toBeVisible({ timeout: 15_000 });
 }
 
 async function submitQuestion(page, question) {
@@ -179,7 +179,9 @@ test("business-query.access_revocation_clears_the_live_stream", async ({ browser
     subjectContext = await browser.newContext();
     const subjectPage = await subjectContext.newPage();
     await openBusinessQuery(subjectPage, subject.credential);
+    const streamOpened = subjectPage.waitForResponse((response) => /\/api\/v1\/business-query\/runs\/[^/]+\/events$/.test(new URL(response.url()).pathname) && response.status() === 200);
     await submitQuestion(subjectPage, `E2E 运行中撤权 ${Date.now()} 有哪些订单？`);
+    await streamOpened;
 
     const downgraded = await api(adminPage, `/api/v1/admin/users/${subject.userId}/roles`, { method: "POST", body: { role_keys: ["qita"] } });
     expect(downgraded.status).toBe(201);
@@ -192,3 +194,42 @@ test("business-query.access_revocation_clears_the_live_stream", async ({ browser
     await adminContext.close();
   }
 });
+
+test("business-query.old_path_redirects_with_308", async ({ page }) => {
+  const response = await page.request.get("/business-query", { maxRedirects: 0 });
+
+  expect(response.status()).toBe(308);
+  expect(response.headers().location).toBe("/agent");
+});
+
+test.describe("business-query.local_cache", () => {
+  test.use({ serviceWorkers: "block" });
+
+  test("business-query.cold_start_shows_the_cached_answer_before_the_server", async ({ page }) => {
+    await openBusinessQuery(page);
+    await submitQuestion(page, `E2E 本地缓存 ${Date.now()} 有哪些订单？`);
+    await expect(page.getByTestId("business-query-phase")).toHaveText("已完成", { timeout: 30_000 });
+    await expect.poll(() => cachedRunCount(page), { timeout: 15_000 }).toBeGreaterThan(0);
+
+    await page.route(/\/api\/v1\/business-query\/sessions(?:\?.*)?$/, () => undefined);
+    await page.reload();
+
+    await expect(page.getByTestId("business-query-answer").last()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("business-query-submit")).toBeDisabled();
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  });
+});
+
+async function cachedRunCount(page) {
+  return page.evaluate(() => new Promise((resolve) => {
+    const request = indexedDB.open("dilee-agent-cache", 1);
+    request.onerror = () => resolve(0);
+    request.onsuccess = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains("kv")) return resolve(0);
+      const all = database.transaction("kv", "readonly").objectStore("kv").getAll();
+      all.onsuccess = () => { database.close(); resolve(all.result.reduce((total, entry) => total + entry.runs.length, 0)); };
+      all.onerror = () => resolve(0);
+    };
+  }));
+}
