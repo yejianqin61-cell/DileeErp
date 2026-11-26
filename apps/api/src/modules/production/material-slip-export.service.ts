@@ -29,6 +29,10 @@ export type MaterialIssueDocumentLine = {
   remainingQuantity: number | null;
   /** 行备注：打印件不印，但页面详情弹窗要看（与旧版详情一致，不能因为走打印数据就丢掉）。 */
   remark: string | null;
+  /** 跨订单调料的来源生产单号（仅跨订单行有值）；页面「来源订单」列与追溯用。 */
+  sourceProductionOrderNo?: string | null;
+  /** 跨订单调料的来源订单号。 */
+  sourceOrderNo?: string | null;
 };
 
 /** 一张领料单的打印数据；字段与用户提供的 Excel 模板一一对应。 */
@@ -112,6 +116,7 @@ const toNumber = (value: Prisma.Decimal | string | number | null | undefined): n
 type ExportLine = {
   materialId: string;
   unitId: string;
+  supplierId: string | null;
   quantity: Prisma.Decimal;
   bomReferenceQuantity: Prisma.Decimal | null;
   remark: string | null;
@@ -127,6 +132,7 @@ type ExportMovement = {
   createdAt: Date;
   reason: string | null;
   remark: string | null;
+  risks?: Array<{ riskType: string; context: Prisma.JsonValue }>;
   productionOrder: {
     productionOrderNo: string;
     orderNo: string;
@@ -226,6 +232,9 @@ export class MaterialSlipExportService {
     return {
       productionOrder: { include: { executionLocation: true, unit: true, salesOrder: true, bom: { include: { items: { where: { deletedAt: null } } } } } },
       productionOrderOperation: { select: { operationNameSnapshot: true } },
+      // 跨订单来源存在风险上下文里（不新增列/迁移），导出与详情都要带上才能追溯。
+      // createdAt 升序与明细创建顺序一致，便于同一物料多来源时逐行对齐。
+      risks: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } },
       lines: { where: { deletedAt: null }, include: { material: true, unit: true }, orderBy: { createdAt: "asc" } }
     } as const;
   }
@@ -233,6 +242,24 @@ export class MaterialSlipExportService {
   private async assemble(movement: ExportMovement, names: Map<string, string>): Promise<MaterialIssueDocument> {
     const order = movement.productionOrder;
     const bomItems = new Map((order.bom?.items ?? []).map((item) => [item.materialId, item]));
+    // 来源订单按「物料 + 单位 + 供应商」对齐到明细行；同一物料可能从多个来源订单领用，按行依次取。
+    const sourcesByKey = new Map<string, Array<{ productionOrderNo: string; orderNo: string }>>();
+    const crossOrderSources: string[] = [];
+    for (const risk of movement.risks ?? []) {
+      if (risk.riskType !== "CROSS_ORDER_SOURCE") continue;
+      const context = (risk.context && typeof risk.context === "object" ? risk.context : {}) as Record<string, unknown>;
+      if (typeof context.material_id !== "string") continue;
+      const source = {
+        productionOrderNo: String(context.source_production_order_no ?? ""),
+        orderNo: String(context.source_order_no ?? ""),
+      };
+      const key = `${context.material_id}|${String(context.unit_id ?? "")}|${String(context.supplier_id ?? "__none__")}`;
+      const existing = sourcesByKey.get(key);
+      if (existing) existing.push(source);
+      else sourcesByKey.set(key, [source]);
+      const label = `${source.productionOrderNo}（${source.orderNo}）`;
+      if (!crossOrderSources.includes(label)) crossOrderSources.push(label);
+    }
     const lines: MaterialIssueDocumentLine[] = [];
     for (const [index, line] of movement.lines.entries()) {
       const bomItem = bomItems.get(line.materialId);
@@ -246,6 +273,7 @@ export class MaterialSlipExportService {
       const inbound = await this.prisma.rawMaterialInbound.aggregate({ where: { materialId: line.materialId, orderNo: order.orderNo, deletedAt: null, status: "posted" }, _sum: { quantity: true } });
       const actualInbound = toNumber(inbound._sum.quantity) ?? 0;
       const reference = issueReferenceQuantityOf(actualInbound, bomQuantity);
+      const source = sourcesByKey.get(`${line.materialId}|${line.unitId}|${line.supplierId ?? "__none__"}`)?.shift();
       lines.push({
         sequence: index + 1,
         materialName: line.material.name,
@@ -258,9 +286,12 @@ export class MaterialSlipExportService {
         issuedQuantity: issued,
         currentQuantity: current,
         remainingQuantity: remainingQuantityOf(reference, issued, current),
-        remark: line.remark ?? null
+        remark: line.remark ?? null,
+        sourceProductionOrderNo: source?.productionOrderNo ?? null,
+        sourceOrderNo: source?.orderNo ?? null,
       });
     }
+    const remark = [movement.remark?.trim(), crossOrderSources.length ? `跨订单来源：${crossOrderSources.join("、")}` : ""].filter(Boolean).join("；");
     return {
       ...EMPTY,
       movementNo: movement.movementNo,
@@ -275,7 +306,7 @@ export class MaterialSlipExportService {
       unitName: order.unit?.name ?? "",
       operatorName: movement.createdBy ? names.get(movement.createdBy) ?? "" : "",
       operatedAt: beijingDateTime(movement.createdAt),
-      remark: movement.remark ?? "",
+      remark,
       lines
     };
   }

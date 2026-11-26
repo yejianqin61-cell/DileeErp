@@ -62,7 +62,8 @@ test("领料单生成后可再次编辑保存", async () => {
       findFirst: async () => ({ ...current, lines: undefined }),
       update: async ({ where, data }) => { updated.push({ where, data }); return { ...current, ...data }; }
     },
-    rawMaterialMovementLine: { updateMany: async () => ({ count: 1 }) }
+    rawMaterialMovementLine: { updateMany: async () => ({ count: 1 }) },
+    rawMaterialMovementRisk: { updateMany: async () => ({ count: 0 }) }
   };
   const prisma = { $transaction: async (fn) => fn(tx), rawMaterialMovement: { findFirst: async () => current }, productionOrder: { findFirst: async () => ({ id: "order-1", orderNo: "DL260001", executionMode: "in_house", status: "in_progress" }) } };
   const service = new RawMaterialMovementsService(prisma, audit, {});
