@@ -257,7 +257,9 @@ describe("采购 → BOM表：删除 BOM（2026-11-05）", () => {
 
   it("孤立 BOM 行用真实 bom_id 删除，不能把行 id（salesOrderId）当 BOM id", async () => {
     const calls = stubApi((url, call) => {
-      if (url.startsWith(`${EP.salesOrders}?status=draft`)) return apiOk([]);
+      // 没有在册销售单时页面会补问一次草稿单张数；它一返回，表格单元格整个重挂载，刚找到的节点就从
+      // 文档上摘掉了（CI 上偶发失败的原因）。本用例验的是删除目标，与这个计数无关，所以让它一直挂着。
+      if (url.startsWith(`${EP.salesOrders}?status=draft`)) return new Promise<Response>(() => undefined);
       // 父销售单已被软删：`/sales-orders` 列表里没有它，BOM 只从 `/boms` 的 orphaned 行补进来
       if (url.startsWith(EP.salesOrders)) return apiOk([]);
       if (url === EP.boms && call.method === "GET") return apiOk([{ id: "bom-orphan", salesOrderId: "so-gone", orderNo: "SO-GONE", status: "draft", orphaned: true }]);
