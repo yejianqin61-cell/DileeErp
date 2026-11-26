@@ -33,6 +33,10 @@ test("production.issue_posts_inventory_facts_and_preserves_risk_and_idempotency"
     const preview = await service.impactPreview(issue.id);
     assert.equal(preview.lines[0].available_before.toString(), "10");
     assert.equal(preview.lines[0].cumulative_issued_after.toString(), "4");
+    // 两段式出库：草稿不能直接出库；生产提交只改状态，仓库确认出库才写库存事实。
+    await assert.rejects(() => service.postIssue(issue.id, "issue-key-1", user), (error) => error.getResponse().code === "INVALID_MATERIAL_MOVEMENT_STATE");
+    assert.equal((await service.submitOutbound(issue.id, user)).status, "pending_outbound");
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "10");
     await service.postIssue(issue.id, "issue-key-1", user);
     await service.postIssue(issue.id, "issue-key-1", user);
     assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "6");
@@ -60,10 +64,18 @@ test("production.issue_posts_inventory_facts_and_preserves_risk_and_idempotency"
     await assert.rejects(() => service.reverse(issue.id, "领料登记错误", "issue-reversal-key-1", user), (error) => error.getResponse().code === "DOWNSTREAM_RECORD_EXISTS");
 
     const insufficient = await service.createIssue({ production_order_id: productionOrder.id, reason: "紧急补料", lines: [{ material_id: material.id, quantity: "9" }] }, user);
-    await assert.rejects(() => service.postIssue(insufficient.id, "issue-key-2", user), (error) => error.getResponse().code === "INSUFFICIENT_INVENTORY");
+    await assert.rejects(() => service.submitOutbound(insufficient.id, user), (error) => error.getResponse().code === "INSUFFICIENT_INVENTORY");
+    // 提交后库存被别处消耗：仓库确认出库时必须在过账环节再拦一次。
+    const stale = await service.createIssue({ production_order_id: productionOrder.id, reason: "提交后库存减少", lines: [{ material_id: material.id, quantity: "5" }] }, user);
+    await service.submitOutbound(stale.id, user);
+    const drift = { materialId: material.id, unitId: unit.id, inventoryCategory: "raw_material", sourceType: "fixture", orderNo: run.orderNo, createdBy: user.id };
+    await prisma.inventoryFact.create({ data: { ...drift, quantityDelta: "-1", sourceId: randomUUID() } });
+    await assert.rejects(() => service.postIssue(stale.id, "issue-key-2", user), (error) => error.getResponse().code === "INSUFFICIENT_INVENTORY");
+    await prisma.inventoryFact.create({ data: { ...drift, quantityDelta: "1", sourceId: randomUUID() } });
     assert.equal(await prisma.inventoryFact.count({ where: { productionOrderId: productionOrder.id, sourceType: "material_issue" } }), 1);
 
     const nonBom = await service.createIssue({ production_order_id: productionOrder.id, reason: "临时替代物料", lines: [{ material_id: extraMaterial.id, quantity: "1" }] }, user);
+    await service.submitOutbound(nonBom.id, user);
     await service.postIssue(nonBom.id, "issue-key-3", user);
     assert.equal(await prisma.rawMaterialMovementRisk.count({ where: { movementId: nonBom.id, riskType: "MATERIAL_NOT_IN_BOM_WARNING" } }), 1);
     assert.equal(await prisma.auditEvent.count({ where: { entityType: "raw_material_movement", entityId: nonBom.id, action: "raw_material_movement.post" } }), 1);

@@ -118,6 +118,16 @@ function createFactories({ prisma, prefix = "fix", actorId, services = {} } = {}
     return track(model, row);
   }
 
+  /**
+   * 取回某批来源单据的挂账凭证（含分录）并登记清理。
+   * vouchers 没有 order_no、对来源单据也没有外键，两轮清扫都够不到它；分录随凭证级联删除。
+   */
+  async function accrualVouchers(sourceType, sourceIds) {
+    const rows = await prisma.voucher.findMany({ where: { sourceType, sourceId: { in: sourceIds } }, include: { lines: { orderBy: { lineNo: "asc" } } } });
+    for (const row of rows) track("voucher", row);
+    return rows;
+  }
+
   /** 带唯一后缀的编号，避免并行/重复运行时撞唯一约束。 */
   const code = (kind) => `${kind}-${run.id}`;
 
@@ -503,6 +513,7 @@ function createFactories({ prisma, prefix = "fix", actorId, services = {} } = {}
     actor: () => actor,
     audit,
     auditEvents,
+    accrualVouchers,
     cleanup,
     cleanupAuditEvents,
     code,
