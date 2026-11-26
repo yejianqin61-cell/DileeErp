@@ -1,7 +1,7 @@
 // 「迪礼顾问」答案 Markdown 渲染组件（components/agent/agent-markdown.tsx）的渲染测试。
 //
 // 这里只断言「DOM 契约」：对话页依赖的 data-testid / 语义角色 / CSS 类名，以及安全约束
-// （裸 HTML 只当文本、javascript: 不生成 href）。解析细节由 lib/agent-markdown.test.mjs 覆盖。
+// （裸 HTML 只当文本、javascript: 不生成 href）。解析细节由 test/agent-markdown-parse.test.ts 覆盖。
 // 注意：globals: false，测试 API 必须显式 import（见 apps/web/vitest.config.mts）。
 import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
@@ -105,5 +105,51 @@ describe("AgentMarkdown 渲染契约", () => {
     render(<AgentMarkdown text="正文" className="agent-md-test" />);
 
     expect(screen.getByTestId("agent-markdown")).toHaveClass("agent-md", "agent-md-test");
+  });
+
+  it("流式光标放在列表最后一项内部", () => {
+    render(<AgentMarkdown text={"- 甲\n- 乙"} caret />);
+
+    expect(screen.getByTestId("agent-stream-caret").parentElement).toBe(screen.getAllByRole("listitem")[1]);
+  });
+
+  it("流式光标放在末尾标题内部", () => {
+    render(<AgentMarkdown text="## 标题" caret />);
+
+    expect(screen.getByTestId("agent-stream-caret").parentElement).toBe(screen.getByRole("heading", { level: 2 }));
+  });
+
+  it("流式光标放在引用的末段内部", () => {
+    render(<AgentMarkdown text={"> 引用提示"} caret />);
+
+    expect(screen.getByTestId("agent-stream-caret").closest("blockquote p")).not.toBeNull();
+  });
+
+  it("以表格结尾时不显示流式光标", () => {
+    render(<AgentMarkdown text={"说明\n\n| 名称 |\n| --- |\n| 螺丝 |"} caret />);
+
+    expect(screen.queryByTestId("agent-stream-caret")).toBeNull();
+  });
+
+  it("单换行显示为换行，任务列表带勾选符号", () => {
+    const { container } = render(<AgentMarkdown text={"第一行\n第二行\n\n- [x] 已完成\n- [ ] 未完成"} />);
+
+    expect(container.querySelector(".agent-md-p br")).not.toBeNull();
+    const items = screen.getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("☑");
+    expect(items[1]).toHaveTextContent("□");
+  });
+
+  it("图片与相对链接不产生元素，原文可见", () => {
+    const { container } = render(<AgentMarkdown text={"![图](https://a.com/i.png) [本地](/orders)"} />);
+
+    expect(container.querySelector("img, a")).toBeNull();
+    expect(screen.getByTestId("agent-markdown").textContent).toContain("![图](https://a.com/i.png) [本地](/orders)");
+  });
+
+  it("流式半截输入渲染不抛异常", () => {
+    for (const text of ["**半个", "[文本](https://example.com/a", "`行内", "```ts\nlet a = 1", "| 表头 |\n| --- |", "$$E=mc", "1. 一\n2."]) {
+      expect(() => render(<AgentMarkdown text={text} caret />), text).not.toThrow();
+    }
   });
 });
