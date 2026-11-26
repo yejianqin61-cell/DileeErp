@@ -1,10 +1,10 @@
 // 应付管理链路集成测试（真实 PostgreSQL）：
-//   原料入库过账 → 应付来源 → 接收应付（草稿）→ 对账（含草稿口径）→ 一键确认应付 → 付款核销 → 收支流水。
+//   原料入库过账 → 应付来源 → 接收应付（草稿）→ 对账（含草稿口径）→ 一键确认应付（挂账）→ 付款核销 → 收支流水。
 //
 // 为什么必须用真库：
 //   * 对账的 system_balance 口径要覆盖**草稿**条目（否则「先对账、再确认应付」的业务顺序会自相矛盾）；
 //   * 付款核销要跨 supplier_payments / supplier_payable_entries / supplier_payment_allocations 三张表闭合；
-//   * 过账必须自动写收支流水 —— 这里断言项目落到「原材料 成本」，
+//   * 过账必须自动写收支流水 —— 这里断言对方科目是「应付账款」、收支类目落到「原材料」，
 //     正是历史缺陷（供应商付款写死不存在的「外加工费」→ 每笔都被静默丢掉）的回归保护。
 //
 // 上游采购链（BOM → 采购单 → 到货 → QC → 通知 → 入库过账）已由 procurement-inbound 集成测试覆盖，
@@ -19,6 +19,7 @@ const { SupplierPayableService } = require("../../dist/modules/finance/supplier-
 const { SupplierPayableReconciliationService } = require("../../dist/modules/finance/supplier-payable-reconciliation.service.js");
 const { SupplierPaymentService } = require("../../dist/modules/finance/supplier-payment.service.js");
 const { CashFlowService } = require("../../dist/modules/finance/cash-flow.service.js");
+const { VoucherService } = require("../../dist/modules/finance/voucher.service.js");
 const { AuditService } = require("../../dist/platform/audit/audit.service.js");
 const { assertAuditEventRecorded, assertDecimalEquals, assertOrderNo } = require("../../../../tests/helpers/business-invariants.cjs");
 const { requireTestDatabaseUrl } = require("../../../../tests/helpers/test-context.cjs");
@@ -32,10 +33,11 @@ test("payable.source_to_reconciliation_confirm_and_payment_posts_cash_flow", asy
   const inventory = new InventoryService();
   const inbounds = new RawMaterialInboundsService(prisma, audit, inventory);
   const notices = new RawMaterialInboundNoticesService(prisma, audit, inbounds);
-  const payables = new SupplierPayableService(prisma, audit);
-  const reconciliations = new SupplierPayableReconciliationService(prisma, audit);
-  const cashFlow = new CashFlowService(prisma, audit);
-  const payments = new SupplierPaymentService(prisma, audit, payables, cashFlow);
+  const vouchers = new VoucherService(prisma, audit);
+  const cashFlow = new CashFlowService(prisma, audit, undefined, vouchers);
+  const payables = new SupplierPayableService(prisma, audit, cashFlow, undefined, vouchers);
+  const reconciliations = new SupplierPayableReconciliationService(prisma, audit, cashFlow, undefined, vouchers);
+  const payments = new SupplierPaymentService(prisma, audit, payables, cashFlow, undefined, vouchers);
   try {
     // ---------- 上游：把采购链推进到「应付来源 pending_finance」 ----------
     const chain = await fx.procurementChain();
@@ -85,6 +87,13 @@ test("payable.source_to_reconciliation_confirm_and_payment_posts_cash_flow", asy
     assertDecimalEquals("批量确认的金额等于应付金额", confirmedResult.confirmed_amount, sourceAmount);
     const confirmedEntry = await prisma.supplierPayableEntry.findUnique({ where: { id: entry.id } });
     assert.equal(confirmedEntry.status, "confirmed");
+    // 确认即挂账：借 原材料 / 贷 应付账款，直接过账；钱还没付出，不得写收支流水。
+    const accruals = await fx.accrualVouchers("supplier_payable", [entry.id]);
+    assert.equal(accruals.length, 1, "每条确认的应付挂且只挂一张账");
+    assert.equal(accruals[0].status, "posted");
+    assertDecimalEquals("挂账金额等于应付金额", accruals[0].debitTotal, sourceAmount);
+    assert.deepEqual(accruals[0].lines.map((line) => [line.direction, line.subjectLabel.split(" / ").at(-1)]), [["debit", "原材料"], ["credit", "应付账款"]]);
+    assert.equal(await prisma.cashFlowEntry.count({ where: { orderNo: fx.run.orderNo } }), 0, "挂账不动现金");
 
     // ---------- 4. 付款并核销 ----------
     const payment = fx.track("supplierPayment", await payments.create({
@@ -116,9 +125,11 @@ test("payable.source_to_reconciliation_confirm_and_payment_posts_cash_flow", asy
     assert.ok(flow, "供应商付款过账必须自动写收支流水（曾经每笔都被静默丢掉）");
     assert.equal(flow.direction, "expense");
     assertDecimalEquals("流水金额等于付款金额", flow.amount, sourceAmount);
-    const item = await prisma.dictionaryItem.findUnique({ where: { id: flow.itemId } });
-    assert.equal(item.key, "原材料 成本", "原料入库来源的付款要落到「原材料 成本」");
     fx.track("cashFlowEntry", flow);
+    const subject = await prisma.accountingSubject.findUnique({ where: { id: flow.subjectId } });
+    assert.equal(subject.name, "应付账款", "已挂账应付的付款冲应付账款，不能再记一次成本");
+    const category = await prisma.accountingSubject.findUnique({ where: { id: flow.categorySubjectId } });
+    assert.equal(category.name, "原材料", "原料入库来源的付款，收支类目要落到「原材料」");
 
     // ---------- 6. 审计 ----------
     const events = await fx.auditEvents();
@@ -135,9 +146,10 @@ test("payable.other_entry_books_management_expense_item", async () => {
   const fx = createFactories({ prisma, prefix: "otherpay" });
   const user = fx.actor();
   const audit = new AuditService(prisma);
-  const payables = new SupplierPayableService(prisma, audit);
-  const cashFlow = new CashFlowService(prisma, audit);
-  const payments = new SupplierPaymentService(prisma, audit, payables, cashFlow);
+  const vouchers = new VoucherService(prisma, audit);
+  const cashFlow = new CashFlowService(prisma, audit, undefined, vouchers);
+  const payables = new SupplierPayableService(prisma, audit, cashFlow, undefined, vouchers);
+  const payments = new SupplierPaymentService(prisma, audit, payables, cashFlow, undefined, vouchers);
   try {
     const supplier = await fx.createSupplier();
     // 其他应付：没有订单、没有来源单据的支出（差旅费报销、临时采购…）
@@ -151,6 +163,10 @@ test("payable.other_entry_books_management_expense_item", async () => {
     assert.equal(entry.sourceType, "other");
     assert.equal(entry.status, "draft");
     await payables.confirm(entry.id, user);
+    const accruals = await fx.accrualVouchers("supplier_payable", [entry.id]);
+    assert.equal(accruals.length, 1);
+    assert.equal(accruals[0].status, "posted");
+    assert.deepEqual(accruals[0].lines.map((line) => [line.direction, line.subjectLabel.split(" / ").at(-1)]), [["debit", "管理费用"], ["credit", "应付账款"]]);
 
     const payment = fx.track("supplierPayment", await payments.create({
       supplier_id: supplier.id,
@@ -163,9 +179,11 @@ test("payable.other_entry_books_management_expense_item", async () => {
 
     const flow = await prisma.cashFlowEntry.findFirst({ where: { sourceType: "supplier_payment", sourceId: payment.id, deletedAt: null } });
     assert.ok(flow, "其他应付的付款同样必须进收支流水");
-    const item = await prisma.dictionaryItem.findUnique({ where: { id: flow.itemId } });
-    assert.equal(item.key, "管理费用", "其他应付没有来源可判，落到「管理费用」（可选人工指定更精确的项目）");
     fx.track("cashFlowEntry", flow);
+    const subject = await prisma.accountingSubject.findUnique({ where: { id: flow.subjectId } });
+    assert.equal(subject.name, "应付账款", "已挂账应付的付款冲应付账款");
+    const category = await prisma.accountingSubject.findUnique({ where: { id: flow.categorySubjectId } });
+    assert.equal(category.name, "管理费用", "其他应付没有来源可判，收支类目落到「管理费用」（可选人工指定更精确的科目）");
     const allocations = await prisma.supplierPaymentAllocation.findMany({ where: { paymentId: payment.id, deletedAt: null } });
     for (const row of allocations) fx.track("supplierPaymentAllocation", row);
   } finally {

@@ -8,7 +8,9 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { RawMaterialMovementsService } from "./raw-material-movements.service";
 
-class IssueLineDto { @IsUUID() material_id!: string; @IsString() quantity!: string; @IsOptional() @IsUUID() supplier_id?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+// unit_id / source_production_order_id 只用于「跨订单调料」：物料来自别的生产订单时，
+// 单位必须按来源库存所属单位锁定（同一物料可能按张入库、默认单位却是个），来源订单用于留痕追溯。
+class IssueLineDto { @IsUUID() material_id!: string; @IsString() quantity!: string; @IsOptional() @IsUUID() supplier_id?: string | null; @IsOptional() @IsUUID() unit_id?: string | null; @IsOptional() @IsUUID() source_production_order_id?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class IssueDto { @IsUUID() production_order_id!: string; // 领料单只绑定生产单（一个生产单可有多张领料单），不再需要工序。
   @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedLineDto { @IsUUID() source_issue_line_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
@@ -33,7 +35,15 @@ export class RawMaterialMovementsController {
    * （Nest 按声明顺序匹配），返回 404 MATERIAL_MOVEMENT_NOT_FOUND。
    */
   @Get("pending-outbound") async pendingOutbound() { return { data: await this.movements.pendingOutbound(), meta: {} }; }
-  @Post("issue-preview") async preview(@Body() body: IssueDto) { return { data: await this.movements.preview(body), meta: {} }; }
+  /**
+   * 跨订单调料检索：按物料名称在**其他生产订单**的已入库未领用库存里找可领物料。
+   *
+   * 权限：除生产模块外还要求仓库模块 —— 跨订单动用的是仓库里别的订单的料，
+   * 后端按 role_permissions 判定（去掉某角色的 warehouse 授权即可收回），前端只是不显示入口。
+   * 路由必须声明在 `@Get(":id")` 之前，否则 "cross-order-stock" 会被当成单据 id。
+   */
+  @Get("cross-order-stock") @RequireModules("production", "warehouse") async crossOrderStock(@Query("production_order_id") productionOrderId: string, @Query("keyword") keyword: string) { return { data: await this.movements.searchCrossOrderStock(productionOrderId, keyword), meta: {} }; }
+  @Post("issue-preview") async preview(@Body() body: IssueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.preview(body, user), meta: {} }; }
   @Post() async create(@Body() body: IssueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createIssue(body, user), meta: {} }; }
   @Post("returns") async createReturn(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createReturn(body, user), meta: {} }; }
   @Post("scraps") async createScrap(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createScrap(body, user), meta: {} }; }

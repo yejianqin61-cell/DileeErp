@@ -14,14 +14,33 @@
  *
  * 保留文件名而不是改名，是为了让 `20260914190000_cash_flow_entries` 迁移与既有守卫测试的
  * 引用不至于为了重命名而整片改动；本文件当前只服务「收支管理」板块，名字仍然贴切。
+ *
+ * ## 2026-11-23：内置清单分「历史」与「当前」两份
+ *
+ * 用户要求把「中国银行-人民币账户」与「备用金（招商银行账户）」加进结算方式。
+ * 迁移 `20260914190000_cash_flow_entries` 已经执行过、按仓库红线**不可再改**，
+ * 它当年只种了老表里的 2 个账户；因此这里把那份历史清单单独冻结成
+ * `LEGACY_SETTLEMENT_ACCOUNTS`（迁移守卫测试用它），
+ * 而 `DEFAULT_SETTLEMENT_ACCOUNTS` 是**当前**内置清单（4 项），供 `prisma/seed.ts` 初始化/补齐新库。
+ *
+ * 已有库里的这两项不会因为改代码自动出现：不能新增 migration、也不能由 Agent 直接写生产库，
+ * 所以财务页「结算方式」提供了「补齐缺失的内置账户」按钮（走既有字典接口，由管理员显式触发），
+ * 或在部署时执行一次 `npm run db:seed --workspace=@dilee/api`（幂等 upsert）。
  */
 
 export const SETTLEMENT_ACCOUNT_DICTIONARY_KEY = "settlement_account";
 
 export type DictionarySeed = { key: string; label: string; sortOrder: number };
 
-/** 老表「结算方式」里出现过的银行账户。 */
-const SETTLEMENT_ACCOUNT_LABELS = ["农业银行5706", "中国银行（美元）7624"] as const;
+/** 老表「结算方式」里出现过的银行账户（迁移 20260914190000 已固化，**不要再改**）。 */
+const LEGACY_SETTLEMENT_ACCOUNT_LABELS = ["农业银行5706", "中国银行（美元）7624"] as const;
+
+/** 当前内置结算账户：历史两项 + 2026-11-23 用户新增两项。 */
+const SETTLEMENT_ACCOUNT_LABELS = [
+  ...LEGACY_SETTLEMENT_ACCOUNT_LABELS,
+  "中国银行-人民币账户",
+  "备用金（招商银行账户）",
+] as const;
 
 /** 归一化：去首尾空白 + 连续空白并成一个空格（其余原样保留）。 */
 export const normalizeDictionaryLabel = (label: string): string => label.trim().replace(/\s+/g, " ");
@@ -34,4 +53,8 @@ const toSeed = (labels: readonly string[]): DictionarySeed[] =>
     return { key: text, label: text, sortOrder: (index + 1) * 10 };
   });
 
+/** 迁移 20260914190000 种下的两项（历史事实，已冻结；迁移守卫测试用它校验「老库升级后不丢项」）。 */
+export const LEGACY_SETTLEMENT_ACCOUNTS: readonly DictionarySeed[] = toSeed(LEGACY_SETTLEMENT_ACCOUNT_LABELS);
+
+/** 当前内置结算账户（seed 用；含 2026-11-23 新增的两项）。 */
 export const DEFAULT_SETTLEMENT_ACCOUNTS: readonly DictionarySeed[] = toSeed(SETTLEMENT_ACCOUNT_LABELS);

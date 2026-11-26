@@ -22,6 +22,8 @@ import type { StubbedCall } from "./helpers/api-stub";
 import { apiErr, apiOk, callsTo, stubApi } from "./helpers/api-stub";
 import { Toaster } from "../components/ui/toaster";
 import { MaterialSlipEditor } from "../components/production/material-slip-editor";
+import { SessionContext } from "../lib/session-context";
+import type { SessionProfile } from "../lib/session";
 
 /** ?movement_id= / ?production_order_id= 的桩：每个用例的 beforeEach 会重置为空。 */
 let mockSearchParams = new URLSearchParams();
@@ -57,6 +59,23 @@ const bomItemsByBomId: Record<string, unknown[]> = {
   ],
   "bom-2": [{ materialId: "m-9", materialName: "里布C", model: null, specificationModel: null, requiredQuantity: "2", unit: "米" }],
 };
+
+const crossOrderItems = [{
+  material_id: "m-other",
+  material_code: "RM-OTHER",
+  material_name: "伞布",
+  specification_model: "58cm",
+  color: "藏青",
+  unit_id: "unit-other",
+  unit_name: "码",
+  supplier_id: "supplier-other",
+  supplier_name: "供应商甲",
+  source_production_order_id: "po-2",
+  source_production_order_no: "MO-002",
+  source_order_no: "SO-002",
+  source_available_quantity: "6",
+  inventory_quantity: "6",
+}];
 
 const rawBalances = [
   { material_id: "m-1", unit_name: "米", quantity: "30" },
@@ -97,6 +116,7 @@ type StubOptions = {
   preview?: (call: StubbedCall) => Response | Promise<Response>;
   create?: (call: StubbedCall) => Response | Promise<Response>;
   movement?: () => Response | Promise<Response>;
+  crossOrder?: () => Response | Promise<Response>;
 };
 
 /** 按路径分发 GET/POST/PATCH 的 fetch 桩；未登记的请求返回 404（避免静默通过）。 */
@@ -108,6 +128,7 @@ function stub(options: StubOptions = {}) {
       const bomId = url.slice(url.indexOf("/boms/") + "/boms/".length);
       return apiOk({ items: (options.bom ?? bomItemsByBomId)[bomId] ?? [] });
     }
+    if (url.includes("/cross-order-stock")) return options.crossOrder ? options.crossOrder() : apiOk({ items: crossOrderItems });
     if (url.endsWith("/issue-preview")) return options.preview ? options.preview(call) : apiOk(previewData);
     if (url.endsWith("/post") || url.endsWith("/post-replenishment") || url.endsWith("/submit")) return apiOk({});
     if (call.method === "POST" && (url.endsWith("/production/material-movements") || url.endsWith("/production/material-movements/replenishments"))) {
@@ -137,6 +158,20 @@ const posts = (calls: StubbedCall[]) =>
 /** 把组件渲染到「已加载完成」；加载失败/被拦截的用例直接 render，不走这里。 */
 async function renderSlip(documentType: "issue" | "replenishment" = "issue") {
   const view = render(<><Toaster /><MaterialSlipEditor documentType={documentType} /></>);
+  await screen.findByTestId("material-slip-lines");
+  return view;
+}
+
+/** 带仓库模块的会话档案：跨订单调料入口只对这类账号显示。 */
+function warehouseProfile(): SessionProfile {
+  return {
+    id: "u-1", username: "operator", display_name: "操作员", role_keys: ["qita"], surface_roles: ["qita"],
+    surface_scope: "general", surface_sections: ["production"], module_keys: ["production", "warehouse"],
+  };
+}
+
+async function renderSlipWithWarehouse() {
+  const view = render(<SessionContext.Provider value={warehouseProfile()}><Toaster /><MaterialSlipEditor documentType="issue" /></SessionContext.Provider>);
   await screen.findByTestId("material-slip-lines");
   return view;
 }
@@ -448,7 +483,7 @@ describe("MaterialSlipEditor 领料单：行增删与数量输入", () => {
     // 但保存前必须被拦下（遗留用例②的行为契约）
     await userEvent.click(screen.getByTestId("material-slip-save-draft"));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("同一物料 + 同一供应商只能有一行：请合并数量后再保存");
+    expect(await screen.findByRole("alert")).toHaveTextContent("同一物料 + 单位 + 供应商 + 来源订单只能有一行：请合并数量后再保存");
     expect(creates(calls)).toHaveLength(0);
   });
 });
@@ -689,5 +724,54 @@ describe("MaterialSlipEditor：加载失败与新建入口", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("新建领料单");
     expect(screen.getByRole("link", { name: "返回单据列表" })).toHaveAttribute("href", "/production/material-issues");
     expect(screen.getByRole("link", { name: "返回仓库" })).toHaveAttribute("href", "/warehouse");
+  });
+});
+
+// ---------------------------------------------------------------- 跨订单调料（T-0026）
+
+describe("MaterialSlipEditor 领料单：跨订单调料", () => {
+  it("有仓库权限：按物料名称检索其他生产订单库存，添加后预览带来源订单与单位", async () => {
+    const calls = stub();
+    await renderSlipWithWarehouse();
+
+    expect(screen.getByTestId("cross-order-material-picker")).toBeVisible();
+    await userEvent.type(screen.getByTestId("cross-order-keyword"), "伞布");
+    await userEvent.click(screen.getByTestId("cross-order-search"));
+
+    await waitFor(() => expect(calls.some((call) => call.url.includes("/cross-order-stock"))).toBe(true));
+    const search = calls.find((call) => call.url.includes("/cross-order-stock"));
+    expect(search?.url).toContain("production_order_id=po-1");
+    expect(search?.url).toContain("keyword=%E4%BC%9E%E5%B8%83");
+
+    // 第一条候选默认选中，改数量后加入明细。
+    await waitFor(() => expect(screen.getByTestId("cross-order-material-select")).toBeVisible());
+    await userEvent.clear(screen.getByTestId("cross-order-quantity"));
+    await userEvent.type(screen.getByTestId("cross-order-quantity"), "4");
+    await userEvent.click(screen.getByTestId("cross-order-add-line"));
+
+    await waitFor(() => expect(columnValues("来源订单")).toContain("MO-002 / SO-002"));
+    const preview = lastBody(calls, "/issue-preview");
+    expect(preview?.lines.at(-1)).toEqual({ material_id: "m-other", quantity: "4", supplier_id: "supplier-other", unit_id: "unit-other", source_production_order_id: "po-2" });
+  });
+
+  it("超过来源订单可用库存：预览被后端拒绝时页面直接提示，不能静默清空", async () => {
+    stub({ preview: () => apiErr(422, "CROSS_ORDER_SOURCE_INSUFFICIENT", "来源生产单 MO-002（SO-002）该物料可用 6码，本次领用 99码 超出可用量") });
+    await renderSlipWithWarehouse();
+
+    await userEvent.type(screen.getByTestId("cross-order-keyword"), "伞布");
+    await userEvent.click(screen.getByTestId("cross-order-search"));
+    await waitFor(() => expect(screen.getByTestId("cross-order-material-select")).toBeVisible());
+    await userEvent.clear(screen.getByTestId("cross-order-quantity"));
+    await userEvent.type(screen.getByTestId("cross-order-quantity"), "99");
+    await userEvent.click(screen.getByTestId("cross-order-add-line"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("超出可用量");
+  });
+
+  it("没有仓库模块权限：不显示入口，并说明需要仓库权限（后端仍会拒绝伪造请求）", async () => {
+    stub();
+    await renderSlip();
+    expect(screen.queryByTestId("cross-order-material-picker")).toBeNull();
+    expect(screen.getByTestId("cross-order-permission-note")).toHaveTextContent("需要仓库模块权限");
   });
 });

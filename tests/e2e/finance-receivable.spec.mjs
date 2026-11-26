@@ -1,8 +1,8 @@
-// 应收管理 E2E：确认应收台账 → 登记收款 → 展开收款面板 → 过账核销 → 自动进收支流水（收入）。
+// 应收管理 E2E：确认应收（挂账）→ 勾选「合并收款」→ 过账核销 → 自动进收支流水（收入）。
 //
-// 特别覆盖用户反馈过的那个缺陷：核销下拉**不得**列出别的币种/订单的应收来源。
-// 这里播一条 USD 应收，再用一笔 CNY 收款去核销，断言下拉里根本选不到那条 USD 来源
-// （服务端也会 422，但界面上就不该出现选不动的选项）。
+// 特别覆盖用户反馈过的那个缺陷：核销时**不得**混进别的币种的应收来源。
+// 这里同一客户播一条 USD、一条 CNY 应收：勾了 USD 之后 CNY 那条必须锁住选不动、也进不了收款单
+// （服务端也会 422，但界面上就不该让人选上）。
 import { PrismaClient } from "@prisma/client";
 import { expect, test } from "playwright/test";
 import { removeE2eAdmin, seedE2eAdmin } from "../helpers/e2e-auth.cjs";
@@ -15,7 +15,9 @@ let admin;
 let customer;
 let salesOrder;
 let location;
+let bank;
 let source;
+let otherSource;
 const sourceNo = () => `E2E-AR-${admin.runId}`;
 
 test.beforeAll(async () => {
@@ -51,21 +53,33 @@ test.beforeAll(async () => {
     data: { outboundNo: `E2E-FGO-${admin.runId}`, orderNo, salesOrderId: salesOrder.id, productionOrderId: productionOrder.id, unitId: unit.id, quantity: "10", status: "posted", idempotencyKey: `e2e-${admin.runId}-outbound`, ...audit },
   });
   source = await prisma.receivableSource.create({
-    data: { sourceNo: sourceNo(), orderNo, salesOrderId: salesOrder.id, outboundId: outbound.id, customerId: customer.id, quantity: "10", unit: unit.name, unitPrice: "120", amount: "1200", currency: "USD", status: "confirmed", ...audit },
+    data: { sourceNo: sourceNo(), orderNo, salesOrderId: salesOrder.id, outboundId: outbound.id, customerId: customer.id, quantity: "10", unit: unit.name, unitPrice: "120", amount: "1200", currency: "USD", status: "draft", ...audit },
   });
+  const otherOutbound = await prisma.finishedGoodsOutbound.create({
+    data: { outboundNo: `E2E-FGO2-${admin.runId}`, orderNo, salesOrderId: salesOrder.id, productionOrderId: productionOrder.id, unitId: unit.id, quantity: "1", status: "posted", idempotencyKey: `e2e-${admin.runId}-outbound-cny`, ...audit },
+  });
+  otherSource = await prisma.receivableSource.create({
+    data: { sourceNo: `E2E-AR-CNY-${admin.runId}`, orderNo, salesOrderId: salesOrder.id, outboundId: otherOutbound.id, customerId: customer.id, quantity: "1", unit: unit.name, unitPrice: "300", amount: "300", currency: "CNY", status: "draft", ...audit },
+  });
+  bank = await prisma.bank.create({ data: { bankCode: `E2E-B-${admin.runId}`, bankName: "E2E收款银行", accountName: "E2E账户", accountNumber: `E2E-ACC-${admin.runId}`, currency: "USD", ...audit } });
 });
 
 test.afterAll(async () => {
   const payments = await prisma.customerPayment.findMany({ where: { customerId: customer?.id ?? "" }, select: { id: true } });
   const paymentIds = payments.map((row) => row.id);
+  const sourceIds = [source?.id, otherSource?.id].filter(Boolean);
+  const flows = await prisma.cashFlowEntry.findMany({ where: { sourceType: "customer_payment", sourceId: { in: paymentIds } }, select: { id: true } });
+  // 挂账凭证与流水凭证对来源单据没有外键，要按来源 id 显式删（分录级联）。
+  const voucherSourceIds = [...sourceIds, ...paymentIds, ...flows.map((row) => row.id)];
+  if (voucherSourceIds.length) await prisma.voucher.deleteMany({ where: { sourceId: { in: voucherSourceIds } } });
   if (paymentIds.length) {
     await prisma.receivableAllocation.deleteMany({ where: { paymentId: { in: paymentIds } } });
     await prisma.cashFlowEntry.deleteMany({ where: { sourceType: "customer_payment", sourceId: { in: paymentIds } } });
     await prisma.customerPayment.deleteMany({ where: { id: { in: paymentIds } } });
   }
-  if (source) {
-    await prisma.receivableAdjustment.deleteMany({ where: { receivableSourceId: source.id } });
-    await prisma.receivableSource.deleteMany({ where: { id: source.id } });
+  if (sourceIds.length) {
+    await prisma.receivableAdjustment.deleteMany({ where: { receivableSourceId: { in: sourceIds } } });
+    await prisma.receivableSource.deleteMany({ where: { id: { in: sourceIds } } });
   }
   if (salesOrder) {
     await prisma.finishedGoodsOutbound.deleteMany({ where: { salesOrderId: salesOrder.id } });
@@ -76,16 +90,22 @@ test.afterAll(async () => {
   if (customer) await prisma.customer.deleteMany({ where: { id: customer.id } });
   if (location) await prisma.productionLocation.deleteMany({ where: { id: location.id } });
   await prisma.unit.deleteMany({ where: { name: `E2E打-${admin.runId}` } });
+  if (bank) await prisma.bank.deleteMany({ where: { id: bank.id } });
   await removeE2eAdmin(prisma, admin?.userId);
   await prisma.$disconnect();
 });
 
-test("receivable.register_receipt_then_post_creates_income_cash_flow", async ({ page }) => {
+test("receivable.merge_receipt_settles_and_creates_income_cash_flow", async ({ page }) => {
   await page.goto("/login");
   await page.getByTestId("login-username").fill(admin.username);
   await page.getByTestId("login-password").fill(admin.password);
   await page.getByTestId("login-submit").click();
   await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });
+
+  for (const id of [source.id, otherSource.id]) {
+    const response = await page.request.post(`/api/v1/finance/receivable-sources/${id}/confirm`, { data: {} });
+    expect(response.status()).toBe(201);
+  }
 
   await page.goto("/finance/receivable?tab=confirmed");
   await expect(page.getByTestId("page-finance-receivable")).toBeVisible({ timeout: 15_000 });
@@ -94,37 +114,32 @@ test("receivable.register_receipt_then_post_creates_income_cash_flow", async ({ 
   await expect(row).toContainText("已确认");
   await expect(row).toContainText("1200");
 
-  // 1) 登记收款：客户/订单/金额应预填，币种默认跟随应收（USD）
-  await row.getByRole("button", { name: "登记收款" }).click();
-  await expect(page.getByTestId("action-dialog")).toBeVisible();
-  await page.getByTestId("action-field-amount").fill("1200");
-  await page.getByTestId("action-dialog-submit").click();
-  await expect(page.getByTestId("toast-item").last()).toContainText("收款草稿已创建", { timeout: 15_000 });
+  // 1) 勾选 USD 应收 → 同客户的 CNY 应收必须锁住（行内不再有「登记收款」：收款是整单结清的批量动作）
+  const otherCheckbox = page.getByTestId(`receivable-select-${otherSource.id}`);
+  await expect(otherCheckbox).toBeEnabled();
+  await page.getByTestId(`receivable-select-${source.id}`).check();
+  await expect(otherCheckbox).toBeDisabled();
+  await expect(page.getByTestId(`receivable-select-lock-${otherSource.id}`)).toContainText("USD");
 
-  // 2) 收款面板默认展开（useCollapsiblePanel defaultOpen=true + localStorage 记忆）：
-  //    只有在收起时才点开，无条件点击会把它关掉。
-  const paymentsToggle = page.getByTestId("receivable-payments-toggle");
-  if ((await paymentsToggle.getAttribute("aria-expanded")) !== "true") await paymentsToggle.click();
-  const paymentRow = page.getByTestId("data-table-row").filter({ hasText: "PAY-" }).first();
-  await expect(paymentRow).toBeVisible({ timeout: 15_000 });
-  await paymentRow.getByRole("button", { name: "过账/核销" }).click();
-  await expect(page.getByTestId("action-dialog")).toBeVisible();
+  // 2) 合并收款弹窗只带勾选的那条，金额与币种跟着应收走
+  await page.getByTestId("receivable-merge-receipt").click();
+  await expect(page.getByTestId("receivable-merge-dialog")).toBeVisible();
+  await expect(page.getByTestId(`receivable-merge-amount-${source.id}`)).toContainText("1200");
+  await expect(page.getByTestId(`receivable-merge-row-${otherSource.id}`)).toHaveCount(0);
+  await expect(page.getByTestId("receivable-merge-receipt-amount")).toContainText("1200 USD");
 
-  // 3) 核销下拉**只应**列出同客户 + 同币种的应收来源：
-  //    本 spec 只播了一条 USD 应收、且收款也是 USD，所以它必须出现在候选里；
-  //    同时断言候选里不出现别的币种（用 CNY 字样兜底）。
-  await page.getByTestId("action-field-source_id").click();
-  const options = page.getByRole("option");
-  await expect(options.filter({ hasText: sourceNo() })).toBeVisible({ timeout: 15_000 });
-  const texts = await options.allTextContents();
-  expect(texts.some((text) => text.includes("USD"))).toBe(true);
-  await options.filter({ hasText: sourceNo() }).click();
-  await page.getByTestId("action-field-amount").fill("1200");
-  await page.getByTestId("action-dialog-submit").click();
-  await expect(page.getByTestId("toast-item").last()).toContainText("收款已过账并核销", { timeout: 15_000 });
+  // 3) 选到账银行账户 → 一次完成建单 + 过账核销
+  await page.getByTestId("receivable-merge-bank").getByRole("combobox").click();
+  await page.getByRole("option").filter({ hasText: bank.accountNumber }).click();
+  await page.getByTestId("receivable-merge-submit").click();
+  await expect(page.getByTestId("toast-item").last()).toContainText("已收款并核销 1 条应收", { timeout: 15_000 });
 
   // 4) 结果回显 + 落库
   await expect.poll(async () => (await prisma.receivableSource.findUnique({ where: { id: source.id } }))?.status, { timeout: 15_000 }).toBe("paid");
+  //    台账默认只看「未收」，收清的行要切到「已收」才看得到
+  await expect(page.getByTestId(`receivable-select-${source.id}`)).toHaveCount(0, { timeout: 15_000 });
+  await page.getByTestId("receivable-payment-filter").click();
+  await page.getByRole("option").filter({ hasText: "已收（" }).click();
   await expect(page.getByTestId("data-table-row").filter({ hasText: sourceNo() }).first()).toContainText("已收清", { timeout: 15_000 });
   const payment = await prisma.customerPayment.findFirst({ where: { customerId: customer.id, status: "posted", deletedAt: null } });
   expect(payment).not.toBeNull();
@@ -132,10 +147,14 @@ test("receivable.register_receipt_then_post_creates_income_cash_flow", async ({ 
   expect(allocations.length).toBe(1);
   expect(allocations[0].amount.toString()).toBe("1200");
 
-  // 5) 自动写收支流水：收入方向、项目「货款」
+  // 5) 自动写收支流水：收入方向、计入所选银行；已挂账的回款冲「应收账款」，收支类目落「主营业务收入」
   const flow = await prisma.cashFlowEntry.findFirst({ where: { sourceType: "customer_payment", sourceId: payment.id, deletedAt: null } });
   expect(flow).not.toBeNull();
   expect(flow.direction).toBe("income");
-  const item = await prisma.dictionaryItem.findUnique({ where: { id: flow.itemId } });
-  expect(item.key).toBe("货款");
+  expect(flow.amount.toString()).toBe("1200");
+  expect(flow.bankId).toBe(bank.id);
+  const subject = await prisma.accountingSubject.findUnique({ where: { id: flow.subjectId } });
+  expect(subject.name).toBe("应收账款");
+  const category = await prisma.accountingSubject.findUnique({ where: { id: flow.categorySubjectId } });
+  expect(category.name).toBe("主营业务收入");
 });

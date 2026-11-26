@@ -21,6 +21,7 @@ let draftLedger;
 let payableEmployee;
 let payableLedger;
 let payableEntry;
+let bank;
 
 test.beforeAll(async () => {
   admin = await seedE2eAdmin(prisma, "payroll");
@@ -32,6 +33,7 @@ test.beforeAll(async () => {
   });
   draftEmployee = await employeeOf("D", `E2E草稿员工-${admin.runId}`);
   payableEmployee = await employeeOf("P", `E2E付款员工-${admin.runId}`);
+  bank = await prisma.bank.create({ data: { bankCode: `E2E-B-${admin.runId}`, bankName: "E2E发薪银行", accountName: "E2E账户", accountNumber: `E2E-ACC-${admin.runId}`, currency: "CNY", ...audit } });
   const period = { periodStart: new Date(`${MONTH}-01T00:00:00.000Z`), periodEnd: new Date(`${MONTH}-30T00:00:00.000Z`) };
 
   draftLedger = await prisma.payrollLedger.create({
@@ -46,16 +48,22 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  const ledgerIds = [draftLedger?.id, payableLedger?.id].filter(Boolean);
-  if (ledgerIds.length) {
+  const employeeIds = [draftEmployee?.id, payableEmployee?.id].filter(Boolean);
+  if (employeeIds.length) {
+    // 按员工查台账：打开工资页会自动导入**当月**全员台账，只删播种的两张会卡在员工外键上。
+    const ledgerIds = (await prisma.payrollLedger.findMany({ where: { employeeId: { in: employeeIds } }, select: { id: true } })).map((row) => row.id);
+    const paymentIds = (await prisma.salaryPaymentAllocation.findMany({ where: { ledgerId: { in: ledgerIds } }, select: { paymentId: true } })).map((row) => row.paymentId);
+    const flowIds = (await prisma.cashFlowEntry.findMany({ where: { sourceType: "salary_payment", sourceId: { in: paymentIds } }, select: { id: true } })).map((row) => row.id);
+    await prisma.voucher.deleteMany({ where: { sourceId: { in: [...ledgerIds, ...paymentIds, ...flowIds] } } });
+    await prisma.cashFlowEntry.deleteMany({ where: { id: { in: flowIds } } });
     await prisma.salaryPaymentAllocation.deleteMany({ where: { ledgerId: { in: ledgerIds } } });
+    await prisma.salaryPayment.deleteMany({ where: { id: { in: paymentIds } } });
     await prisma.payrollPayableEntry.deleteMany({ where: { ledgerId: { in: ledgerIds } } });
     await prisma.payrollAdjustment.deleteMany({ where: { ledgerId: { in: ledgerIds } } });
     await prisma.payrollLedger.deleteMany({ where: { id: { in: ledgerIds } } });
+    await prisma.employee.deleteMany({ where: { id: { in: employeeIds } } });
   }
-  await prisma.salaryPayment.deleteMany({ where: { paymentNo: { contains: admin.runId } } });
-  const employeeIds = [draftEmployee?.id, payableEmployee?.id].filter(Boolean);
-  if (employeeIds.length) await prisma.employee.deleteMany({ where: { id: { in: employeeIds } } });
+  if (bank) await prisma.bank.deleteMany({ where: { id: bank.id } });
   if (position) await prisma.position.deleteMany({ where: { id: position.id } });
   if (department) await prisma.department.deleteMany({ where: { id: department.id } });
   await removeE2eAdmin(prisma, admin?.userId);
@@ -110,6 +118,11 @@ test("payroll.ledger_cell_edit_persists_and_inline_payment_settles", async ({ pa
   await expect(page.getByTestId(`salary-pay-button-${payableLedger.id}`)).toBeVisible({ timeout: 15_000 });
   await page.getByTestId(`salary-pay-amount-${payableLedger.id}`).fill("5000");
   await page.getByTestId(`salary-pay-button-${payableLedger.id}`).click();
+  // 发工资必须指定发放银行：行内按钮先开弹窗问账户
+  await expect(page.getByTestId("action-dialog")).toBeVisible();
+  await page.getByTestId("action-field-bank_id").click();
+  await page.getByRole("option").filter({ hasText: bank.accountNumber }).click();
+  await page.getByTestId("action-dialog-submit").click();
   await expect(page.getByTestId("toast-item").last()).toContainText("已付款", { timeout: 15_000 });
 
   // 4) 落库校验：台账已付清、应付已付清、并自动写了收支流水
@@ -122,4 +135,7 @@ test("payroll.ledger_cell_edit_persists_and_inline_payment_settles", async ({ pa
   const flow = await prisma.cashFlowEntry.findFirst({ where: { sourceType: "salary_payment", sourceId: allocations[0].paymentId, deletedAt: null } });
   expect(flow).not.toBeNull();
   expect(flow.direction).toBe("expense");
+  expect(flow.bankId).toBe(bank.id);
+  const subject = await prisma.accountingSubject.findUnique({ where: { id: flow.subjectId } });
+  expect(subject.name).toBe("工资支付");
 });

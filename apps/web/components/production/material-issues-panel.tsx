@@ -25,6 +25,7 @@ import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { formatBeijingShort } from "../../lib/audit-time";
 import { isMaterialMovementDocumentType, movementEditorHref } from "../../lib/material-slip-api";
 import { MaterialSlipLinesTable, type SlipDocument } from "./material-slip-lines-table";
+import { movementRiskLabels } from "../../lib/material-movement-derived";
 // 打印件（2026-11-02）：与领料单列表页同一个纸面组件、同一份 slip-document。
 import { MaterialSlipPrintSheet } from "./material-slip-print-sheet";
 import type { MaterialSlipPrint } from "../../lib/material-slip-print";
@@ -45,7 +46,7 @@ type Draft = { id?: string; documentType: "issue" | "replenishment"; lines: Draf
 const errorText = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const statusLabels: Record<string, string> = { draft: "草稿", pending_outbound: "待仓库出库", posted: "已过账", reversed: "已冲销" };
 const typeLabels: Record<string, string> = { issue: "领料单", replenishment: "补料单", return: "退料单", scrap: "报废单", reversal: "冲销单" };
-const riskLabels: Record<string, string> = { MATERIAL_NOT_IN_BOM_WARNING: "不在 BOM 中", OVER_ISSUE_WARNING: "超出实际入库数量", INSUFFICIENT_STOCK_WARNING: "库存不足" };
+const riskLabels = movementRiskLabels;
 const idempotencyKey = () => `web-issue-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 /**

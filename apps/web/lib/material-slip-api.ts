@@ -1,7 +1,52 @@
 // 领料单（issue，MI-）与补料单（replenishment，MC-）共用同一套原料出库接口，
 // 只有「创建」和「过账」两条路径按单据类型分叉。集中在这里，避免某个页面漏判类型：
 // 服务端 postIssue() 对补料单会直接 422（该单据不是领料单），漏判就是「点过账就报错」。
+import type { SessionProfile } from "./session";
+
 export type MaterialMovementDocumentType = "issue" | "replenishment";
+
+/** 跨订单库存检索的一行（后端 `GET /production/material-movements/cross-order-stock`）。 */
+export type CrossOrderStockItem = {
+  material_id: string;
+  material_code: string;
+  material_name: string;
+  specification_model?: string | null;
+  color?: string | null;
+  unit_id: string;
+  unit_name: string;
+  supplier_id?: string | null;
+  supplier_name?: string | null;
+  source_production_order_id: string;
+  source_production_order_no: string;
+  source_order_no: string;
+  source_available_quantity: string;
+  inventory_quantity: string;
+};
+
+/**
+ * 跨订单调料权限：除生产外必须有仓库模块。
+ *
+ * 与后端 `role_permissions` 同口径：这里只决定「显不显示入口」，真正的拒绝在服务端。
+ * 档案未加载（null）时按无权限处理，避免权限快照缺失时把入口闪给所有人。
+ */
+export function canCrossOrderIssue(profile: Pick<SessionProfile, "module_keys"> | null | undefined): boolean {
+  return Boolean(profile?.module_keys?.includes("warehouse"));
+}
+
+export function crossOrderStockPath(productionOrderId: string, keyword: string): string {
+  const params = new URLSearchParams();
+  if (productionOrderId) params.set("production_order_id", productionOrderId);
+  if (keyword.trim()) params.set("keyword", keyword.trim());
+  const query = params.toString();
+  return `/production/material-movements/cross-order-stock${query ? `?${query}` : ""}`;
+}
+
+/** 下拉文案：物料名 / 规格 / 来源生产单 / 来源可用量。 */
+export function crossOrderStockLabel(item: CrossOrderStockItem): string {
+  const spec = item.specification_model ? ` / ${item.specification_model}` : "";
+  const supplier = item.supplier_name ? ` / ${item.supplier_name}` : "";
+  return `${item.material_name}${spec} / 来源 ${item.source_production_order_no}（${item.source_order_no}）/ 可用 ${item.source_available_quantity}${item.unit_name}${supplier}`;
+}
 
 export const materialMovementDocumentTypes: MaterialMovementDocumentType[] = ["issue", "replenishment"];
 

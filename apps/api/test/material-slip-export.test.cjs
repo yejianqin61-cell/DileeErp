@@ -138,6 +138,18 @@ test("小计行对四个数量列求和，其余列留空", async () => {
   for (const column of [7, 8, 9, 10, 11]) assert.match(String(subtotal.getCell(column).value.formula), /^SUM\(/, `第 ${column} 列应有求和公式`);
 });
 
+test("跨订单调料：来源生产单/订单号进明细字段与备注，导出件可追溯", async () => {
+  const { movement, prisma } = issueFixture({
+    risks: [{ riskType: "CROSS_ORDER_SOURCE", context: { material_id: "material-1", unit_id: "unit-1", supplier_id: null, source_production_order_id: "order-2", source_production_order_no: "MO-20260910-0002", source_order_no: "DL260002", quantity: "2" } }],
+  });
+  movement.lines[0].supplierId = null;
+  const service = new MaterialSlipExportService(prisma, fakeActors());
+  const document = await service.buildDocument("movement-1");
+  assert.equal(document.lines[0].sourceProductionOrderNo, "MO-20260910-0002");
+  assert.equal(document.lines[0].sourceOrderNo, "DL260002");
+  assert.match(document.remark, /跨订单来源：MO-20260910-0002（DL260002）/);
+});
+
 test("草稿领料单在标题上标注草稿", async () => {
   const service = harness({ status: "draft" });
   const sheet = (await open(await service.exportSlip("movement-1"))).getWorksheet("MI-20260910-ABCD1234");

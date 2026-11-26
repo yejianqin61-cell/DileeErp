@@ -63,13 +63,21 @@ test.afterAll(async () => {
   await prisma.$disconnect();
 });
 
-/** 仓库页「原料流转」面板：所有原料流转单（领料/退料/报废/冲销）。 */
+/** 「领料单 / 补料单」列表页：全部原料流转单。 */
 function movementsPanel(page) {
-  return page.locator("section.panel").filter({ hasText: "原料流转" });
+  return page.getByTestId("page-production-material-issues");
 }
-/** 仓库页「原料仓储情况」面板：按物料+单位的当前原料余额。 */
+/** 原料仓储情况页的「库存汇总」面板：按物料+单位的当前原料余额。 */
 function balancesPanel(page) {
-  return page.locator("section.panel").filter({ hasText: "原料仓储情况" });
+  return page.locator("section.panel").filter({ has: page.getByRole("heading", { name: "库存汇总" }) });
+}
+/** 按表头文字取一行里的单元格：列会增删，写死下标会静默读错列。 */
+async function cellByHeader(table, row, header) {
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  const headers = (await table.getByRole("columnheader").allTextContents()).map((text) => text.trim());
+  const index = headers.indexOf(header);
+  expect(index, `表头里应有「${header}」，实际：${headers.join(" | ")}`).toBeGreaterThanOrEqual(0);
+  return row.getByRole("cell").nth(index);
 }
 /** 在 ActionDialog 里选一个 Radix Select 选项（原生 selectOption 对 Radix 无效）。 */
 async function chooseOption(page, fieldTestId, optionText) {
@@ -80,8 +88,9 @@ async function chooseOption(page, fieldTestId, optionText) {
 /**
  * 当前 UI 的原料流转流程（旧 spec 在生产/仓库页用的原生 `select[name="production_order_id"]`
  * 等控件已随 ActionDialog + Radix Select + 全屏领料单编辑页迁移而消失）：
- *   仓库 → 新建领料单（全屏编辑页，物料只能从该生产单订单 BOM 里选）→ 保存草稿 → 列表里过账出库
- *   → 回仓库：查看库存影响/审计上下文 → 退料并过账 → 报废并过账 → 尝试冲销来源领料（必须被下游记录拦住）。
+ *   仓库 → 新建领料单（全屏编辑页，物料只能从该生产单订单 BOM 里选）→ 保存草稿 → 列表里「确认提交」
+ *   → 仓库「待出库通知」确认出库 → 查看库存影响/审计上下文 → 退料并过账 → 报废并过账
+ *   → 尝试冲销来源领料（必须被下游记录拦住）。
  */
 test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversal_guard", async ({ page }) => {
   await page.goto("/login");
@@ -101,15 +110,16 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
   await expect(page.getByTestId("loading-state")).toBeHidden({ timeout: 15_000 });
   await chooseOption(page, "material-slip-order-select", productionOrderNo);
 
-  // 2) 服务端领料预览：BOM 核定用量 5、当前库存 10、本次领用 2 后的生产领用累计 2、生产未领用 5。
+  // 2) 服务端领料预览：配料 5（BOM）、已领 0、当前库存 10；本订单没有采购入库，余下以配料为基准 = 5 - 0 - 2 = 3。
   const slipLines = page.getByTestId("material-slip-lines");
   await expect(page.getByTestId("material-slip-line-material-0")).toContainText(materialName, { timeout: 15_000 });
+  const slipRow = slipLines.getByRole("row").nth(1);
+  // 先等默认数量 1 的预览落地（余下 4）再改数量：编辑页不丢弃过期的预览响应，抢在它返回前改会被旧值盖掉。
+  await expect(await cellByHeader(slipLines, slipRow, "余下数量")).toHaveText(/^4(\.0+)?$/, { timeout: 15_000 });
   await page.getByTestId("material-slip-line-quantity-0").fill("2");
-  const slipCells = slipLines.getByRole("row").nth(1).getByRole("cell");
-  await expect(slipCells.nth(4)).toHaveText(/^5(\.0+)?$/);
-  await expect(slipCells.nth(5)).toHaveText(/^10(\.0+)?$/);
-  await expect(slipCells.nth(8)).toHaveText(/^2(\.0+)?$/);
-  await expect(slipCells.nth(9)).toHaveText(/^5(\.0+)?$/);
+  for (const [header, expected] of [["配料数量", "5"], ["已领数量", "0"], ["余下数量", "3"], ["当前库存量", "10"], ["实际入库数量", "0"]]) {
+    await expect(await cellByHeader(slipLines, slipRow, header), header).toHaveText(new RegExp(`^${expected}(\\.0+)?$`));
+  }
 
   // 3) 保存草稿：编辑页保存后回到领料/补料单列表，草稿必须真的落在列表里（保存成功即整页跳转，
   //    提示 toast 会被跳转吃掉，所以这里断言的是跳转结果 + 列表里的草稿行，而不是瞬时提示）。
@@ -120,26 +130,35 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
   await expect(draftRow).toContainText("草稿", { timeout: 15_000 });
   await expect(draftRow).toContainText(`× 2${unitName}`);
 
-  // 4) 过账出库：扣减原料库存。
-  await draftRow.getByRole("button", { name: "过账出库" }).click();
-  await expect(page.getByTestId("toast-item").last()).toContainText("已过账", { timeout: 15_000 });
-  await expect(draftRow).toContainText("已过账");
+  // 4) 两段式出库：生产「确认提交」（不动库存）→ 仓库在「待出库通知」里确认出库（扣减原料库存）。
+  const movementNo = (await (await cellByHeader(movementsPanel(page), draftRow, "单据号")).textContent()).trim();
+  expect(movementNo).toMatch(/^MI-/);
+  await draftRow.getByRole("button", { name: "确认提交" }).click();
+  await expect(page.getByTestId("toast-item").last()).toContainText("已提交仓库，等待确认出库", { timeout: 15_000 });
+  await expect(page.getByTestId("data-table-row").filter({ hasText: movementNo })).toContainText("待仓库出库");
 
-  // 5) 仓库：原料余额从 10 扣到 8，流转单里能看到已过账的领料单。
   await page.goto("/warehouse");
   await expect(page.getByTestId("page-warehouse")).toBeVisible({ timeout: 15_000 });
-  const balanceRow = balancesPanel(page).getByTestId("data-table-row").filter({ hasText: materialCode });
-  await expect(balanceRow.getByRole("cell").nth(3)).toHaveText(/^8(\.0+)?$/, { timeout: 15_000 });
-  const issueRow = movementsPanel(page).getByTestId("data-table-row").filter({ hasText: orderNo }).filter({ hasText: "领料" });
-  await expect(issueRow).toContainText("已过账", { timeout: 15_000 });
-  const movementNo = (await issueRow.getByRole("button").first().textContent()).trim();
-  expect(movementNo).toMatch(/^MI-/);
+  const pendingRow = page.getByTestId("data-table-row").filter({ hasText: movementNo });
+  await pendingRow.getByRole("button", { name: "确认出库" }).click();
+  await expect(page.getByTestId("toast-item").last()).toContainText("已确认出库，原料库存已扣减", { timeout: 15_000 });
+  await expect(pendingRow).toHaveCount(0);
 
-  // 6) 库存影响预览 + 单据详情/审计上下文（旧「影响预览」面板已被仓库页的影响弹窗与审计侧栏取代）。
+  // 5) 原料余额从 10 扣到 8，单据列表里能看到已过账的领料单。
+  await page.goto("/warehouse/raw-material-storage");
+  const balanceRow = balancesPanel(page).getByTestId("data-table-row").filter({ hasText: materialCode });
+  await expect(await cellByHeader(balancesPanel(page), balanceRow, "已过账库存")).toHaveText(/^8(\.0+)?$/, { timeout: 15_000 });
+  await page.goto(`/production/material-issues?production_order_id=${productionOrderId}`);
+  const issueRow = movementsPanel(page).getByTestId("data-table-row").filter({ hasText: movementNo });
+  await expect(issueRow).toContainText("已过账", { timeout: 15_000 });
+
+  // 6) 库存影响 + 单据详情/审计上下文（单据列表行内的两个弹窗）。
   await issueRow.getByRole("button", { name: "影响" }).click();
   const impactDialog = page.getByRole("dialog").filter({ hasText: "库存影响" });
   await expect(impactDialog).toBeVisible({ timeout: 15_000 });
   await expect(impactDialog).toContainText(materialName);
+  await expect(impactDialog.getByTestId("impact-quantity")).toHaveText(/^2(\.0+)?/);
+  await expect(impactDialog.getByTestId("impact-stock")).toHaveText(/^8(\.0+)?$/);
   await page.keyboard.press("Escape");
   await expect(impactDialog).toBeHidden();
   await issueRow.getByRole("button", { name: "审计" }).click();
@@ -147,6 +166,8 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
   await expect(auditSheet).toBeVisible({ timeout: 15_000 });
   await expect(auditSheet).toContainText(movementNo);
   await expect(auditSheet).toContainText(orderNo);
+  const postEvent = auditSheet.getByTestId("data-table-row").filter({ hasText: "过账" });
+  await expect(postEvent).toContainText("原料浏览器测试");
   await page.keyboard.press("Escape");
 
   // 7) 退料并过账：必须填原因（当前流程把原因做成了必填项）。
@@ -173,7 +194,7 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
 
   // 9) 冲销门禁：来源领料已经有下游退料/报废记录，冲销必须被拒绝，单据状态保持已过账。
   await issueRow.getByRole("button", { name: "冲销" }).click();
-  await expect(page.getByRole("dialog").filter({ hasText: "冲销库存单" })).toBeVisible();
+  await expect(page.getByRole("dialog").filter({ hasText: `冲销：${movementNo}` })).toBeVisible();
   await page.getByLabel("冲销原因").fill("验证下游记录冲销门禁");
   await page.getByTestId("action-dialog-submit").click();
   await expect(page.getByTestId("toast-item").last()).toContainText("存在后续退料或报废记录，不能冲销来源领料", { timeout: 15_000 });

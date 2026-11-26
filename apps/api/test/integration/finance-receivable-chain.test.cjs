@@ -5,7 +5,7 @@
 //   * 应收来源对 outbound_id 有唯一约束（一个出库只能生成一条应收），要真库才能验证；
 //   * 核销要跨 customer_payments / receivable_sources / receivable_allocations 闭合，
 //     并回写来源状态（confirmed → paid）；
-//   * 过账必须自动写收支流水（收入方向、项目「货款」）；
+//   * 过账必须自动写收支流水（收入方向、对方科目「应收账款」、收支类目「主营业务收入」）；
 //   * 服务端的「客户/币种必须与来源一致」与「核销额不得超过未收」两条护栏只在真库事务里才完整。
 //
 // 出库单直接播种：成品入库 → 出库通知 → 出库过账这条物理链路已由成品出库契约测试与
@@ -16,6 +16,7 @@ const { PrismaClient } = require("@prisma/client");
 const { ReceivableService } = require("../../dist/modules/finance/receivable.service.js");
 const { CustomerPaymentService } = require("../../dist/modules/finance/customer-payment.service.js");
 const { CashFlowService } = require("../../dist/modules/finance/cash-flow.service.js");
+const { VoucherService } = require("../../dist/modules/finance/voucher.service.js");
 const { AuditService } = require("../../dist/platform/audit/audit.service.js");
 const { assertAuditEventRecorded, assertDecimalEquals, assertOrderNo } = require("../../../../tests/helpers/business-invariants.cjs");
 const { requireTestDatabaseUrl } = require("../../../../tests/helpers/test-context.cjs");
@@ -26,9 +27,10 @@ test("receivable.outbound_to_confirmed_to_paid_posts_income_cash_flow", async ()
   const fx = createFactories({ prisma, prefix: "receivable" });
   const user = fx.actor();
   const audit = new AuditService(prisma);
-  const receivables = new ReceivableService(prisma, audit);
-  const cashFlow = new CashFlowService(prisma, audit);
-  const payments = new CustomerPaymentService(prisma, audit, receivables, cashFlow);
+  const vouchers = new VoucherService(prisma, audit);
+  const cashFlow = new CashFlowService(prisma, audit, undefined, vouchers);
+  const receivables = new ReceivableService(prisma, audit, cashFlow, undefined, vouchers);
+  const payments = new CustomerPaymentService(prisma, audit, receivables, cashFlow, undefined, vouchers);
   try {
     // ---------- 前置：已确认销售单 + 生产单 + 已过账出库 ----------
     const chain = await fx.productionChain();
@@ -68,6 +70,13 @@ test("receivable.outbound_to_confirmed_to_paid_posts_income_cash_flow", async ()
     // ---------- 2. 确认应收 ----------
     const confirmed = await receivables.confirm(source.id, user);
     assert.equal(confirmed.status, "confirmed");
+    // 确认即挂账：借 应收账款 / 贷 主营业务收入，直接过账；钱还没到，不得写收支流水。
+    const accruals = await fx.accrualVouchers("receivable_source", [source.id]);
+    assert.equal(accruals.length, 1, "一条应收挂且只挂一张账");
+    assert.equal(accruals[0].status, "posted");
+    assertDecimalEquals("挂账金额等于应收金额", accruals[0].debitTotal, "1200");
+    assert.deepEqual(accruals[0].lines.map((line) => [line.direction, line.subjectLabel.split(" / ").at(-1)]), [["debit", "应收账款"], ["credit", "主营业务收入"]]);
+    assert.equal(await prisma.cashFlowEntry.count({ where: { orderNo: fx.run.orderNo } }), 0, "挂账不动现金");
     const balanceBefore = await receivables.allocationBalance(source.id);
     assertDecimalEquals("确认后未收等于应收全额", balanceBefore.available, "1200");
 
@@ -97,14 +106,16 @@ test("receivable.outbound_to_confirmed_to_paid_posts_income_cash_flow", async ()
     const balanceAfter = await receivables.allocationBalance(source.id);
     assertDecimalEquals("核销后未收归零", balanceAfter.available, "0");
 
-    // ---------- 5. 过账自动写收支流水（收入方向、「货款」项目） ----------
+    // ---------- 5. 过账自动写收支流水（收入方向） ----------
     const flow = await prisma.cashFlowEntry.findFirst({ where: { sourceType: "customer_payment", sourceId: payment.id, deletedAt: null } });
     assert.ok(flow, "收款过账必须自动写一条收支流水");
     assert.equal(flow.direction, "income");
     assertDecimalEquals("流水金额等于收款金额", flow.amount, "1200");
-    const item = await prisma.dictionaryItem.findUnique({ where: { id: flow.itemId } });
-    assert.equal(item.key, "货款", "客户回款要落到「货款」项目");
     fx.track("cashFlowEntry", flow);
+    const subject = await prisma.accountingSubject.findUnique({ where: { id: flow.subjectId } });
+    assert.equal(subject.name, "应收账款", "已挂账应收的回款冲应收账款，不能再记一次收入");
+    const category = await prisma.accountingSubject.findUnique({ where: { id: flow.categorySubjectId } });
+    assert.equal(category.name, "主营业务收入", "客户回款的收支类目要落到「主营业务收入」");
 
     // ---------- 6. 已核销的收款不能再核销（状态机护栏） ----------
     await assert.rejects(
@@ -128,9 +139,10 @@ test("receivable.allocation_guards_reject_currency_mismatch_and_over_allocation"
   const fx = createFactories({ prisma, prefix: "arguard" });
   const user = fx.actor();
   const audit = new AuditService(prisma);
-  const receivables = new ReceivableService(prisma, audit);
-  const cashFlow = new CashFlowService(prisma, audit);
-  const payments = new CustomerPaymentService(prisma, audit, receivables, cashFlow);
+  const vouchers = new VoucherService(prisma, audit);
+  const cashFlow = new CashFlowService(prisma, audit, undefined, vouchers);
+  const receivables = new ReceivableService(prisma, audit, cashFlow, undefined, vouchers);
+  const payments = new CustomerPaymentService(prisma, audit, receivables, cashFlow, undefined, vouchers);
   try {
     const chain = await fx.productionChain();
     const outbound = fx.track("finishedGoodsOutbound", await prisma.finishedGoodsOutbound.create({
@@ -148,6 +160,7 @@ test("receivable.allocation_guards_reject_currency_mismatch_and_over_allocation"
     }));
     const source = fx.track("receivableSource", await receivables.createFromOutbound(outbound.id, { amount: "100", amount_reason: "手工确认" }, user));
     await receivables.confirm(source.id, user);
+    await fx.accrualVouchers("receivable_source", [source.id]);
     const sourceCurrency = source.currency;
 
     // 币种不一致的收款不得核销到该应收上。
@@ -220,6 +233,7 @@ test("receivable.allocation_guards_reject_currency_mismatch_and_over_allocation"
     assertDecimalEquals("核销后未收余额", balance.available, "0");
     const allocationRows = await prisma.receivableAllocation.findMany({ where: { paymentId: settledPayment.id, deletedAt: null } });
     for (const row of allocationRows) fx.track("receivableAllocation", row);
+    fx.track("cashFlowEntry", await prisma.cashFlowEntry.findFirst({ where: { sourceType: "customer_payment", sourceId: settledPayment.id } }));
     assert.equal(allocationRows.length, 1, "整单结清只产生一条核销行");
     assertDecimalEquals("核销金额等于未收余额", allocationRows[0].amount, "100");
   } finally {

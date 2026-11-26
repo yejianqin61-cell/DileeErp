@@ -84,6 +84,9 @@ const EXEMPT = new Map(Object.entries({
   // 这一页要回答的是「哪张已删的销售单留下了什么」，13 类单据的审计字段形状各不相同，
   // 硬拼两列只会在其中几类上填出空值。
   "app/sales/orphans/page.tsx": "孤立单据汇总：一行是下游单据的投影（单号/状态/金额/时间），操作人在各单据自己的模块里已有两列",
+
+  // 原料流转单的审计记录弹窗（2026-11-26）：一行是一条审计事件，本身就带「操作人 / 时间」两列。
+  "components/production/material-movement-dialogs.tsx": "审计事件表：一行是一次操作记录而不是单据，操作人与时间就是它自己的列",
 }));
 
 function walk(dir) {

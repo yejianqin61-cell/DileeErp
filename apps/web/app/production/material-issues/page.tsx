@@ -11,6 +11,7 @@
 // 出库已改为两步：草稿不再直接过账出库（那会由生产单方面单方扣减原料库存），
 // 必须先「确认提交」（draft → pending_outbound）等仓库「确认出库」（pending_outbound → posted）才写库存事实。
 // 本页同时是仓库的「原料流转」入口，所以待出库行也可以在这里直接确认出库 / 撤回提交。
+// 退料单 / 报废单从已过账的领料行派生，连同冲销单列在下方第二张表里（上面那张表与导出只管领料单、补料单）。
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -38,6 +39,8 @@ import { MaterialSlipLinesTable, type SlipDocument } from "../../../components/p
 import { MaterialSlipPrintSheet } from "../../../components/production/material-slip-print-sheet";
 import type { MaterialSlipPrint } from "../../../lib/material-slip-print";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
+import { MovementAuditDialog, MovementImpactDialog } from "../../../components/production/material-movement-dialogs";
+import { derivedCopy, derivedFields, derivedPayload, deriveSourceSelection, type DerivedType } from "../../../lib/material-movement-derived";
 
 type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
 type Issue = AuditRow & {
@@ -56,8 +59,9 @@ type Issue = AuditRow & {
   remark?: string | null;
   createdAt: string;
   lines: MovementLine[];
+  risks?: Array<{ riskType: string }>;
 };
-type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; operations?: Array<{ id: string; operationNameSnapshot: string; status: string }> };
+type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode?: string; status?: string; operations?: Array<{ id: string; operationNameSnapshot: string; status: string }> };
 
 const statusLabels: Record<string, string> = { draft: "草稿", pending_outbound: "待仓库出库", posted: "已过账", reversed: "已冲销" };
 // 领料单与补料单都是挂在生产单下的原料出库单据，版式不同但层级一致。
@@ -92,6 +96,19 @@ const ISSUE_COLUMN_WIDTH = {
   actions: "18%",
 } as const;
 
+/** 「退料 / 报废 / 冲销单」列表（9 列 + 审计两列），业务列总和 86%，与上表同一分配口径。 */
+const DERIVED_COLUMN_WIDTH = {
+  orderNo: "9%",
+  productionOrder: "10%",
+  documentType: "6%",
+  movementNo: "10%",
+  status: "7%",
+  lines: "16%",
+  reason: "12%",
+  createdAt: "8%",
+  actions: "8%",
+} as const;
+
 /**
  * 详情弹窗里「领用物料（N 项）」小表的列，已挪到 components/production/material-slip-lines-table：
  * 那张表的列名、列宽、四个数量的口径必须与打印件一致，不能在本页再写一份。
@@ -112,7 +129,10 @@ export default function MaterialIssuesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
-  const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+  const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void>; deriveValues?: (changedField: string, values: Record<string, string>) => Record<string, string> } | null>(null);
+  const [derived, setDerived] = useState<Issue[]>([]);
+  const [impactTarget, setImpactTarget] = useState<Issue | null>(null);
+  const [auditTarget, setAuditTarget] = useState<Issue | null>(null);
   // 双击行弹出的详情：列表行只有 materialId，物料编码/名称/规格型号要按 id 单独拉一次详情接口；
   // 明细数量另取「与打印件同源」的 slip-document（导出服务的组装结果），页面不再自己算。
   const [detailId, setDetailId] = useState("");
@@ -162,6 +182,30 @@ export default function MaterialIssuesPage() {
     catch (cause) { notifyError(messageOf(cause, "操作失败")); }
     finally { setBusy(""); }
   }
+  /**
+   * 退料 / 报废：建单 + 过账一次完成。过账失败时删掉刚建的草稿（草稿不写库存），
+   * 否则改完数量再提交会越积越多。失败要抛回弹窗，原因留在弹窗里。
+   */
+  async function submitDerived(type: DerivedType, values: Record<string, string>) {
+    const copy = derivedCopy[type];
+    let createdId = "";
+    try {
+      createdId = (await apiPost<{ id: string }>(copy.createPath, derivedPayload(values))).data.id;
+      await apiPost(`/production/material-movements/${createdId}/${copy.postAction}`, { idempotency_key: idempotencyKey() });
+    } catch (cause) {
+      if (createdId) await apiRequest(`/production/material-movements/${createdId}`, { method: "DELETE" }).catch(() => undefined);
+      const message = messageOf(cause, `${copy.button}失败`);
+      notifyError(message);
+      throw new Error(message);
+    }
+    notifySuccess(copy.success);
+    setDialog(null);
+    await load();
+    onChanged();
+  }
+  function openDerived(type: DerivedType) {
+    setDialog({ title: derivedCopy[type].title, fields: derivedFields(issues, orders), deriveValues: (field, values) => deriveSourceSelection(issues, field, values), submit: (values) => submitDerived(type, values) });
+  }
   function onChanged() {
     // 领料出库会改变库存与生产进度：通知已打开该生产单的页面重新拉取。
     if (typeof window !== "undefined") window.dispatchEvent(new Event("dilee:material-movement-changed"));
@@ -175,6 +219,7 @@ export default function MaterialIssuesPage() {
         apiGet<ProductionOrder[]>("/production/orders")
       ]);
       setIssues(movements.data.filter((item) => ["issue", "replenishment"].includes(item.documentType)));
+      setDerived(movements.data.filter((item) => ["return", "scrap", "reversal"].includes(item.documentType)));
       setOrders(production.data);
     } catch (cause) { setError(messageOf(cause, "领料单加载失败")); }
     finally { setLoading(false); }
@@ -231,6 +276,19 @@ export default function MaterialIssuesPage() {
   }).sort((left, right) => `${left.orderNo}|${left.productionOrder?.productionOrderNo ?? ""}|${left.createdAt}`
     .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, status, documentType, from, to, keyword, focusedMovementId]);
 
+  // 下面那张表跟着订单号 / 生产单 / 日期 / 关键字走；「类型」「状态」两个下拉是领料单、补料单的口径，不套用。
+  const visibleDerived = useMemo(() => derived.filter((item) => {
+    if (orderNo && !item.orderNo.toLowerCase().includes(orderNo.toLowerCase())) return false;
+    if (productionOrderId !== "all" && item.productionOrderId !== productionOrderId) return false;
+    const businessDate = (item.businessDate ?? item.createdAt ?? "").slice(0, 10);
+    if (from && businessDate < from) return false;
+    if (to && businessDate > to) return false;
+    return fuzzyMatch(keyword, [
+      item.orderNo, item.productionOrder?.productionOrderNo, typeLabels[item.documentType] ?? item.documentType,
+      item.movementNo, statusLabels[item.status] ?? item.status, businessDate,
+    ]);
+  }), [derived, orderNo, productionOrderId, from, to, keyword]);
+
   // 导出参数与页面筛选完全一致，避免"看到的"和"导出的"不是同一批。
   function exportQuery() {
     const params = new URLSearchParams();
@@ -286,7 +344,20 @@ export default function MaterialIssuesPage() {
     { id: "total", header: "数量合计", meta: { width: ISSUE_COLUMN_WIDTH.total }, cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
     { accessorKey: "createdAt", header: "登记时间", meta: { width: ISSUE_COLUMN_WIDTH.createdAt }, cell: ({ row }) => formatBeijingShort(row.original.createdAt) || "-" },
     ...auditColumns<Issue>(),
-    { id: "actions", header: "操作", meta: { width: ISSUE_COLUMN_WIDTH.actions }, cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button><Button size="sm" variant="secondary" disabled={printLoading} data-testid={`material-slip-print-${slip.movementNo}`} onClick={() => void openPrint(slip)}>打印</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
+    { id: "actions", header: "操作", meta: { width: ISSUE_COLUMN_WIDTH.actions }, cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions" style={{ flexWrap: "wrap" }}><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button><Button size="sm" variant="secondary" disabled={printLoading} data-testid={`material-slip-print-${slip.movementNo}`} onClick={() => void openPrint(slip)}>打印</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}{slip.status === "posted" && <Button size="sm" variant="secondary" onClick={() => setImpactTarget(slip)}>影响</Button>}<Button size="sm" variant="ghost" onClick={() => setAuditTarget(slip)}>审计</Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
+  ];
+
+  const derivedColumns: ColumnDef<Issue>[] = [
+    { accessorKey: "orderNo", header: "订单号", meta: { width: DERIVED_COLUMN_WIDTH.orderNo } },
+    { id: "productionOrder", header: "生产单号", meta: { width: DERIVED_COLUMN_WIDTH.productionOrder }, cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
+    { id: "documentType", header: "类型", meta: { width: DERIVED_COLUMN_WIDTH.documentType }, cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
+    { accessorKey: "movementNo", header: "单据号", meta: { width: DERIVED_COLUMN_WIDTH.movementNo } },
+    { id: "status", header: "状态", meta: { width: DERIVED_COLUMN_WIDTH.status }, cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
+    { id: "lines", header: "物料明细", meta: { width: DERIVED_COLUMN_WIDTH.lines }, cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
+    { id: "reason", header: "原因", meta: { width: DERIVED_COLUMN_WIDTH.reason }, cell: ({ row }) => row.original.reason || "-" },
+    { accessorKey: "createdAt", header: "登记时间", meta: { width: DERIVED_COLUMN_WIDTH.createdAt }, cell: ({ row }) => formatBeijingShort(row.original.createdAt) || "-" },
+    ...auditColumns<Issue>(),
+    { id: "actions", header: "操作", meta: { width: DERIVED_COLUMN_WIDTH.actions }, cell: ({ row }) => { const slip = row.original; return <div className="page-actions" style={{ flexWrap: "wrap" }}>{slip.status === "posted" && slip.documentType !== "reversal" && <Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button>}<Button size="sm" variant="ghost" onClick={() => setAuditTarget(slip)}>审计</Button></div>; } }
   ];
 
   const detailFields: DetailField[] = detail ? [
@@ -312,7 +383,7 @@ export default function MaterialIssuesPage() {
       <Button onClick={() => void exportAll()} disabled={busy === "all" || !visible.length}>{busy === "all" ? "导出中..." : `批量导出（${visible.length} 张）`}</Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
-    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { void dialog?.submit(values); }} />
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} deriveValues={dialog?.deriveValues} onSubmit={(values) => dialog?.submit(values)} />
     <section className="panel">
       <div className="panel-heading"><h2>筛选</h2></div>
       <div className="panel-body"><div className="filter-bar">
@@ -334,6 +405,17 @@ export default function MaterialIssuesPage() {
       <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张{keyword.trim() ? `（关键字筛选后）` : ""}{focusedMovementId ? "（已定位到任务提醒中的单据）" : ""}（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
       <div className="panel-body"><DataTable columns={columns} data={visible} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的单据`} description={`当前条件下共 ${visible.length} 张，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} onRowDoubleClick={(slip) => setDetailId(slip.id)} rowTitle="双击查看领用物料" /></div>
     </section>
+    <section className="panel" data-testid="material-derived-panel">
+      <div className="panel-heading"><h2>退料 / 报废 / 冲销单</h2><span className="panel-note">共 {visibleDerived.length} 张（按订单号、生产单、日期与关键字筛选）</span>
+        <div className="page-actions">
+          <Button variant="secondary" data-testid="material-return" onClick={() => openDerived("return")}>{derivedCopy.return.button}</Button>
+          <Button variant="secondary" data-testid="material-scrap" onClick={() => openDerived("scrap")}>{derivedCopy.scrap.button}</Button>
+        </div>
+      </div>
+      <div className="panel-body"><DataTable columns={derivedColumns} data={visibleDerived} empty={<EmptyState title="没有退料、报废或冲销记录" description="点本栏的「退料 / 报废」，从已过账的领料单明细里选择来源。" />} /></div>
+    </section>
+    <MovementImpactDialog movement={impactTarget} onClose={() => setImpactTarget(null)} />
+    <MovementAuditDialog movement={auditTarget} typeLabel={typeLabels[auditTarget?.documentType ?? ""] ?? "-"} statusLabel={statusLabels[auditTarget?.status ?? ""] ?? "-"} onClose={() => setAuditTarget(null)} />
     {/* 双击弹出的详情：把这一条单据的全部领用物料列出来，而不是只给「N 项」的合计。 */}
     <RecordDetailDialog
       open={Boolean(detailId)}

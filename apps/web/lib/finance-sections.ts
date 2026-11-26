@@ -16,6 +16,10 @@ export const FINANCE_BOARDS = [
   // 而应付/应收页回答的是另一个问题（哪些钱还没结）。
   { key: "slips", title: "收付款单" },
   { key: "banks", title: "银行账户" },
+  // 结算方式设置（2026-11-23）：收支流水上的「结算账户」字典项维护。
+  // 用户原话里的「结算方式」在本系统落成这个字典（见 finance-sections 末尾的注释）；
+  // 银行账户是主数据（`bank_id`），结算账户只是老表「结算方式」里给人看的账户文本，两者不是一回事。
+  { key: "settlements", title: "结算方式" },
   { key: "bank-transfers", title: "银行余额互转" },
   { key: "cash-flow", title: "收支管理" },
   { key: "reports", title: "财务报表" },
@@ -168,7 +172,7 @@ export const SALARY_SECTIONS = [
 
 export type SalarySectionKey = (typeof SALARY_SECTIONS)[number]["key"];
 
-/** 每个板块的子栏目。凭证管理、银行账户、银行余额互转与收付款单没有子栏目（都是单页满页表格）。 */
+/** 每个板块的子栏目。凭证管理、银行账户、结算方式、银行余额互转与收付款单没有子栏目（都是单页满页表格）。 */
 export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: string; title: string }>> = {
   receivable: RECEIVABLE_TABS,
   payable: PAYABLE_TABS,
@@ -177,6 +181,7 @@ export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: st
   // 但它不是这个板块的子栏目清单：那些链接是**同一条路**的不同参数，不是不同页面。
   slips: [],
   banks: [],
+  settlements: [],
   "bank-transfers": [],
   "cash-flow": CASH_FLOW_TABS,
   reports: FINANCE_REPORT_TABS,

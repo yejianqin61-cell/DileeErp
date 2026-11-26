@@ -6,7 +6,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  canCrossOrderIssue,
   createMovementPath,
+  crossOrderStockLabel,
+  crossOrderStockPath,
   isMaterialMovementDocumentType,
   movementEditorHref,
   postMovementPath,
@@ -47,4 +50,30 @@ test("编辑页链接：补料单带 type，草稿带 movement_id，续开带 pr
     movementEditorHref("issue", { productionOrderId: "p1" }),
     "/production/material-issues/new?production_order_id=p1",
   );
+});
+
+test("跨订单调料权限：必须同时有生产与仓库模块（前端只决定是否显示入口）", () => {
+  assert.equal(canCrossOrderIssue(null), false);
+  assert.equal(canCrossOrderIssue({ module_keys: ["production"] }), false);
+  assert.equal(canCrossOrderIssue({ module_keys: ["production", "warehouse"] }), true);
+  assert.equal(canCrossOrderIssue({ module_keys: ["warehouse"] }), true, "后端同时要求 production+warehouse；前端入口只看仓库模块，生产页面本身已受生产模块守卫");
+});
+
+test("跨订单库存检索路径：带生产单与物料名称关键词，并做 URL 编码", () => {
+  assert.equal(crossOrderStockPath("po-1", "伞布"), "/production/material-movements/cross-order-stock?production_order_id=po-1&keyword=%E4%BC%9E%E5%B8%83");
+  assert.equal(crossOrderStockPath("", ""), "/production/material-movements/cross-order-stock");
+});
+
+test("跨订单候选文案：物料、规格、来源生产单/订单号与来源可用量都要显示", () => {
+  const label = crossOrderStockLabel({
+    material_id: "m-1", material_code: "RM-1", material_name: "伞布", specification_model: "58cm", color: "藏青",
+    unit_id: "u-1", unit_name: "码", supplier_id: "s-1", supplier_name: "供应商甲",
+    source_production_order_id: "po-2", source_production_order_no: "MO-002", source_order_no: "SO-002",
+    source_available_quantity: "6", inventory_quantity: "6",
+  });
+  assert.match(label, /伞布/);
+  assert.match(label, /58cm/);
+  assert.match(label, /来源 MO-002（SO-002）/);
+  assert.match(label, /可用 6码/);
+  assert.match(label, /供应商甲/);
 });

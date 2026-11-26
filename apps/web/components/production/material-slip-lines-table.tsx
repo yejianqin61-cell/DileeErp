@@ -40,7 +40,15 @@ export type SlipDocumentLine = {
   replenishQuantity?: number;
   /** 供应商（空串表示「未指定」）。同一物料同供应商只能一行，这里展示该行所属供应商。 */
   supplierName?: string | null;
+  /** 跨订单调料：来源生产单号 / 来源订单号（仅跨订单行有值）。 */
+  sourceProductionOrderNo?: string | null;
+  sourceOrderNo?: string | null;
 };
+
+/** 明细「备注」列：跨订单来源优先显示，再接用户备注，保证详情里一眼能追溯。 */
+const lineRemarkText = (line: SlipDocumentLine) => [line.sourceOrderNo ? `来源 ${line.sourceProductionOrderNo ?? "-"} / ${line.sourceOrderNo}` : "", line.remark]
+  .filter((value) => value !== null && value !== undefined && String(value).trim() !== "")
+  .join("；");
 
 export type SlipDocument = { document_type: "issue" | "replenishment"; document: { lines: SlipDocumentLine[] } };
 
@@ -80,14 +88,14 @@ const ISSUE_COLUMNS: ColumnDef<SlipDocumentLine>[] = [
     cell: ({ getValue }) => { const value = getValue<number | null>(); return value === null ? "-" : <span className={value < 0 ? "status-danger" : undefined}>{value}</span>; },
     accessorFn: (line) => line.remainingQuantity ?? null,
   },
-  { id: "remark", header: "备注", meta: { width: ISSUE_WIDTH.remark }, accessorFn: (line) => text(line.remark) },
+  { id: "remark", header: "备注", meta: { width: ISSUE_WIDTH.remark }, accessorFn: (line) => text(lineRemarkText(line)) },
 ];
 
 /** 补料单：纸面只有「补领数量」，没有四个数量列。 */
 const REPLENISHMENT_COLUMNS: ColumnDef<SlipDocumentLine>[] = [
   ...baseColumns(REPLENISHMENT_WIDTH),
   { id: "replenishQuantity", header: "补领数量", meta: { width: REPLENISHMENT_WIDTH.replenishQuantity }, accessorFn: (line) => amount(line.replenishQuantity) },
-  { id: "remark", header: "备注", meta: { width: REPLENISHMENT_WIDTH.remark }, accessorFn: (line) => text(line.remark) },
+  { id: "remark", header: "备注", meta: { width: REPLENISHMENT_WIDTH.remark }, accessorFn: (line) => text(lineRemarkText(line)) },
 ];
 
 /**
@@ -113,7 +121,7 @@ export function MaterialSlipLinesTable({ slip }: { slip: SlipDocument | null }) 
    * 「搜什么都能搜到」比搜不到更让人不信任这个框。要按数量核对，看的是这几个数字列本身。
    */
   const visibleLines = useMemo(() => (slip?.document.lines ?? []).filter((line) => fuzzyMatch(keyword, [
-    line.materialCode, line.materialName, line.specificationModel, line.color, line.unit, line.supplierName, line.remark,
+    line.materialCode, line.materialName, line.specificationModel, line.color, line.unit, line.supplierName, line.remark, line.sourceProductionOrderNo, line.sourceOrderNo,
   ])), [slip, keyword]);
   return <>
     {/* 版式与其它列表页一致：filter-bar + 「筛选后 N / M」+ 清除搜索（用户在这种框里学到的操作要一致）。 */}
