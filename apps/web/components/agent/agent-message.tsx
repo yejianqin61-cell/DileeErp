@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslate } from "../../features/agent-chat/i18n";
 import { memo, useEffect, useState } from "react";
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Copy, Pencil, RotateCcw, Sparkles } from "lucide-react";
 import type { MessageVersions } from "../../features/agent-chat/chat/branches";
@@ -20,6 +21,7 @@ export function AgentUserMessage({ text, versions, disabled, onEdit, onSelectVer
   onEdit?: (question: string) => void;
   onSelectVersion?: (runId: string) => void;
 }) {
+  const t = useTranslate();
   const [draft, setDraft] = useState<string | null>(null);
   return <div className="agent-msg agent-msg-user" data-testid="agent-message-user">
     {draft === null
@@ -27,18 +29,18 @@ export function AgentUserMessage({ text, versions, disabled, onEdit, onSelectVer
         <div className="agent-bubble-user" data-testid="agent-question">{text}</div>
         <div className={styles.actions}>
           {versions && versions.ids.length > 1 && <span className={styles.versions}>
-            <Button variant="ghost" size="icon" aria-label="上一个版本" disabled={disabled || versions.index <= 0} onClick={() => onSelectVersion?.(versions.ids[versions.index - 1])}><ChevronLeft size={13} /></Button>
+            <Button variant="ghost" size="icon" aria-label={t("previousVersion")} disabled={disabled || versions.index <= 0} onClick={() => onSelectVersion?.(versions.ids[versions.index - 1])}><ChevronLeft size={13} /></Button>
             <span>{versions.index + 1}/{versions.ids.length}</span>
-            <Button variant="ghost" size="icon" aria-label="下一个版本" disabled={disabled || versions.index >= versions.ids.length - 1} onClick={() => onSelectVersion?.(versions.ids[versions.index + 1])}><ChevronRight size={13} /></Button>
+            <Button variant="ghost" size="icon" aria-label={t("nextVersion")} disabled={disabled || versions.index >= versions.ids.length - 1} onClick={() => onSelectVersion?.(versions.ids[versions.index + 1])}><ChevronRight size={13} /></Button>
           </span>}
-          {onEdit && <Button variant="ghost" size="icon" title="编辑" aria-label="编辑" disabled={disabled} onClick={() => setDraft(text)}><Pencil size={13} /></Button>}
+          {onEdit && <Button variant="ghost" size="icon" title={t("edit")} aria-label={t("edit")} disabled={disabled} onClick={() => setDraft(text)}><Pencil size={13} /></Button>}
         </div>
       </div>
       : <div className={styles.editor}>
-        <textarea className="ui-textarea" aria-label="编辑问题" autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <textarea className="ui-textarea" aria-label={t("editQuestion")} autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} />
         <div className={styles.actions}>
-          <Button variant="secondary" size="sm" onClick={() => setDraft(null)}>取消</Button>
-          <Button size="sm" disabled={disabled || !draft.trim()} onClick={() => { onEdit?.(draft.trim()); setDraft(null); }}>重新发送</Button>
+          <Button variant="secondary" size="sm" onClick={() => setDraft(null)}>{t("cancel")}</Button>
+          <Button size="sm" disabled={disabled || !draft.trim()} onClick={() => { onEdit?.(draft.trim()); setDraft(null); }}>{t("resend")}</Button>
         </div>
       </div>}
   </div>;
@@ -56,6 +58,7 @@ export function AgentUserMessage({ text, versions, disabled, onEdit, onSelectVer
  *   在正文与来源之间插入一个 `AgentStructuredResult` 即可，页面与线程都不用改。
  */
 export const AgentAssistantMessage = memo(function AgentAssistantMessage({ turn, onRetry }: { turn: AgentTurn; onRetry?: (question: string) => void }) {
+  const t = useTranslate();
   const streaming = turn.status === "streaming";
   const retryable = Boolean(onRetry) && canRetryTurn(turn);
   return <div className="agent-msg agent-msg-assistant" data-testid="agent-message-assistant">
@@ -64,7 +67,7 @@ export const AgentAssistantMessage = memo(function AgentAssistantMessage({ turn,
       <AgentToolSteps steps={turn.toolSteps} />
 
       {/* 流式期间还没有任何正文：给一句轻量状态，而不是空白等在那儿。 */}
-      {streaming && !turn.answer && <p className="agent-answer-note" data-testid="agent-answer-pending">正在组织查询…</p>}
+      {streaming && !turn.answer && <p className="agent-answer-note" data-testid="agent-answer-pending">{t("answerPending")}</p>}
 
       {turn.answer && <div data-testid="business-query-answer">
         {/* 流式光标由 Markdown 渲染器挂在最后一个段落末尾（贴着最后一个字），不是单独一行方块 */}
@@ -72,24 +75,25 @@ export const AgentAssistantMessage = memo(function AgentAssistantMessage({ turn,
       </div>}
 
       {turn.status === "error" && <p className="agent-answer-error" data-testid="business-query-error" role="alert">
-        <AlertTriangle size={13} aria-hidden="true" />{`以上内容不完整：${turn.error?.message ?? "本次查询未完成"}${turn.error?.code ? `（${turn.error.code}）` : ""}`}
+        <AlertTriangle size={13} aria-hidden="true" />{`${t("answerIncomplete", { message: turn.error?.message ?? t("runIncomplete") })}${turn.error?.code ? t("errorCode", { code: turn.error.code }) : ""}`}
       </p>}
 
       {turn.status === "cancelled" && <p className="agent-answer-note" data-testid="agent-answer-cancelled">
-        已停止生成{turn.answer ? "，以上是停止前收到的内容。" : "。"}
+        {turn.answer ? t("stoppedWithText") : t("stoppedEmpty")}
       </p>}
 
       <AgentSources sources={turn.sources} />
 
       <div className="agent-answer-actions">
         {turn.answer && <CopyButton text={turn.answer} />}
-        {retryable && <Button variant="ghost" size="sm" onClick={() => onRetry?.(turn.question)} title="用同一个问题重新查询" data-testid="agent-retry"><RotateCcw size={12} />重试</Button>}
+        {retryable && <Button variant="ghost" size="sm" onClick={() => onRetry?.(turn.question)} title={t("retryHint")} data-testid="agent-retry"><RotateCcw size={12} />{t("retry")}</Button>}
       </div>
     </div>
   </div>;
 });
 
 function CopyButton({ text }: { text: string }) {
+  const t = useTranslate();
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   // 2 秒后回到「复制」：状态提示只在点完的一瞬间有意义。
   useEffect(() => {
@@ -97,8 +101,8 @@ function CopyButton({ text }: { text: string }) {
     const timer = setTimeout(() => setState("idle"), 2000);
     return () => clearTimeout(timer);
   }, [state]);
-  return <Button variant="ghost" size="sm" title="复制这条回复" onClick={() => { void copyText(text).then((copied) => setState(copied ? "copied" : "failed")); }} data-testid="agent-copy">
+  return <Button variant="ghost" size="sm" title={t("copyHint")} onClick={() => { void copyText(text).then((copied) => setState(copied ? "copied" : "failed")); }} data-testid="agent-copy">
     {state === "copied" ? <Check size={12} /> : <Copy size={12} />}
-    {state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制"}
+    {state === "copied" ? t("copied") : state === "failed" ? t("copyFailed") : t("copy")}
   </Button>;
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import AgentPage from "../app/agent/page";
+import { DICTIONARIES } from "../features/agent-chat/i18n";
 
 const api = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../lib/api-client", () => ({ ApiClientError: class extends Error {}, apiGet: api.get, apiPost: vi.fn(), apiPatch: vi.fn(), apiDelete: vi.fn() }));
@@ -79,5 +80,36 @@ describe("顾问页 · 主题", () => {
     await userEvent.click(screen.getByTestId("agent-history-open"));
 
     expect(await screen.findByTestId("agent-history-dialog")).toHaveAttribute("data-agent-theme", "dark");
+  });
+});
+
+describe("顾问页 · 中英切换", () => {
+  it("中英词表键集合一致且没有空值", () => {
+    const [chinese, english] = [DICTIONARIES["zh-CN"], DICTIONARIES["en-US"]];
+
+    expect(Object.keys(english).sort()).toEqual(Object.keys(chinese).sort());
+    expect([...Object.values(chinese), ...Object.values(english)].filter((value) => !value.trim())).toEqual([]);
+  });
+
+  it("占位符在两种语言里一致", () => {
+    const slots = (value: string) => (value.match(/\{\w+\}/g) ?? []).sort();
+    for (const [key, value] of Object.entries(DICTIONARIES["zh-CN"])) {
+      expect(slots(DICTIONARIES["en-US"][key as keyof (typeof DICTIONARIES)["zh-CN"]]), key).toEqual(slots(value));
+    }
+  });
+
+  it("切到英文后欢迎页没有汉字，重挂仍是英文", async () => {
+    const first = await open();
+    await choose("English");
+    await userEvent.click(screen.getByTestId("agent-settings-open"));
+    expect(screen.getByText("How can I help today?")).toBeVisible();
+    expect(first.workspace.textContent).not.toMatch(/[\u4e00-\u9fff]/);
+    first.view.unmount();
+
+    const second = await open();
+
+    await waitFor(() => expect(screen.getByText("How can I help today?")).toBeVisible());
+    expect(second.workspace.textContent).not.toMatch(/[\u4e00-\u9fff]/);
+    expect(screen.getByLabelText("Business question")).toBeVisible();
   });
 });

@@ -5,12 +5,14 @@ import { createContext, useCallback, useEffect, useMemo, useState, useSyncExtern
 
 export type ThemePreference = "system" | "light" | "dark";
 export type Theme = "light" | "dark";
-export type AgentSettings = { theme: ThemePreference };
+export type Locale = "zh-CN" | "en-US";
+export type AgentSettings = { theme: ThemePreference; locale: Locale };
 
-export const DEFAULT_SETTINGS: AgentSettings = { theme: "system" };
+export const DEFAULT_SETTINGS: AgentSettings = { theme: "system", locale: "zh-CN" };
 
 const STORAGE_KEY = "dilee.agent.settings";
 const THEMES: readonly ThemePreference[] = ["system", "light", "dark"];
+const LOCALES: readonly Locale[] = ["zh-CN", "en-US"];
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 export type AgentSettingsValue = { settings: AgentSettings; theme: Theme; update: (patch: Partial<AgentSettings>) => void };
@@ -20,7 +22,10 @@ export const AgentSettingsContext = createContext<AgentSettingsValue>({ settings
 function readSettings(): AgentSettings {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<AgentSettings> | null;
-    return { theme: THEMES.find((theme) => theme === stored?.theme) ?? DEFAULT_SETTINGS.theme };
+    return {
+      theme: THEMES.find((theme) => theme === stored?.theme) ?? DEFAULT_SETTINGS.theme,
+      locale: LOCALES.find((locale) => locale === stored?.locale) ?? DEFAULT_SETTINGS.locale,
+    };
   } catch {
     return DEFAULT_SETTINGS;
   }

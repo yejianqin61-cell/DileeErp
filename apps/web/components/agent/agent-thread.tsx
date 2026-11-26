@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslate } from "../../features/agent-chat/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
 import type { MessageVersions } from "../../features/agent-chat/chat/branches";
@@ -28,6 +29,7 @@ export function AgentThread({ turns, onPickSuggestion, onRetryTurn, scrollSignal
   /** 每次用户发问自增：强制贴底（即使他刚才在看历史）。 */
   scrollSignal: number;
 }) {
+  const t = useTranslate();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [following, setFollowing] = useState(true);
   const empty = turns.length === 0;
@@ -70,7 +72,7 @@ export function AgentThread({ turns, onPickSuggestion, onRetryTurn, scrollSignal
           </div>)}
         </div>}
     </div>
-    {!empty && !following && <button type="button" className="agent-scroll-bottom" onClick={() => { setFollowing(true); stickToBottom(); }} title="回到底部" aria-label="回到底部" data-testid="agent-scroll-bottom">
+    {!empty && !following && <button type="button" className="agent-scroll-bottom" onClick={() => { setFollowing(true); stickToBottom(); }} title={t("scrollToBottom")} aria-label={t("scrollToBottom")} data-testid="agent-scroll-bottom">
       <ArrowDown size={15} />
     </button>}
   </div>;

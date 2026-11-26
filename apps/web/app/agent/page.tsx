@@ -8,6 +8,7 @@ import { AgentToolbar } from "../../components/agent/agent-toolbar";
 import { ErrorState, LoadingState } from "../../components/feedback/states";
 import { EMPTY_BRANCHES, addBranch, ancestryOf, isBranchState, parentOf, revealing, selectVersion, versionsOf, visiblePath, type BranchState } from "../../features/agent-chat/chat/branches";
 import { browserSessionStore, loadDraft, saveDraft } from "../../features/agent-chat/chat/drafts";
+import { translatorFor } from "../../features/agent-chat/i18n";
 import { AgentSettingsContext, useAgentSettingsState } from "../../features/agent-chat/settings/settings";
 import themeStyles from "../../features/agent-chat/settings/theme.module.css";
 import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "../../lib/agent-cache";
@@ -17,7 +18,6 @@ import { initialBusinessQueryState, isBusyPhase, reduce, type QuerySourceView } 
 import { followRunStream } from "../../lib/business-query-stream";
 import { useSessionProfile } from "../../lib/session-context";
 import {
-  PHASE_LABELS,
   createClientMessageId,
   isTerminalRunState,
   mergeTurns,
@@ -30,7 +30,7 @@ import {
 } from "../../lib/agent-chat";
 
 const HISTORY_LIMIT = 20;
-const OFFLINE_NOTICE = "无法连接业务查询服务，当前显示本地缓存";
+const PHASE_KEYS = { submitting: "phaseSubmitting", connecting: "phaseConnecting", streaming: "phaseStreaming", disconnected: "phaseDisconnected", done: "phaseDone", error: "phaseError", cancelled: "phaseCancelled" } as const;
 
 const isUnreachable = (cause: unknown) => !(cause instanceof ApiClientError) || cause.code === "REQUEST_ERROR";
 
@@ -41,6 +41,9 @@ type Resend = { question: string; parent: string | null };
 export default function AgentPage() {
   const [state, dispatch] = useReducer(reduce, initialBusinessQueryState);
   const appearance = useAgentSettingsState();
+  const t = useMemo(() => translatorFor(appearance.settings.locale), [appearance.settings.locale]);
+  const translate = useRef(t);
+  translate.current = t;
   const [history, setHistory] = useState<AgentTurn[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [input, setInput] = useState("");
@@ -118,7 +121,7 @@ export default function AgentPage() {
     }).catch((cause) => {
       if (abort.signal.aborted) return;
       if (cache && (cause as { refused?: boolean }).refused) void clearCachedSession(cache.store, cache.userId);
-      setNotice({ message: cause instanceof Error ? cause.message : "与服务的连接中断，请刷新页面重试", action: "reload" });
+      setNotice({ message: cause instanceof Error ? cause.message : translate.current("streamLost"), action: "reload" });
     }).finally(() => {
       if (streamAbort.current === abort) streamAbort.current = null;
     });
@@ -179,7 +182,7 @@ export default function AgentPage() {
         setLoading(false);
         if (offline) {
           setLoadError("");
-          setNotice({ message: OFFLINE_NOTICE, action: "reload" });
+          setNotice({ message: translate.current("offlineNotice"), action: "reload" });
         }
       });
     }
@@ -205,7 +208,7 @@ export default function AgentPage() {
         if (cache && isUnreachable(cause)) {
           offline = true;
           if (shown) {
-            setNotice({ message: OFFLINE_NOTICE, action: "reload" });
+            setNotice({ message: translate.current("offlineNotice"), action: "reload" });
             return;
           }
         } else {
@@ -213,7 +216,7 @@ export default function AgentPage() {
           if (cache) void clearCachedSession(cache.store, cache.userId);
           setHistory([]);
         }
-        setLoadError(cause instanceof ApiClientError ? cause.message : "无法连接业务查询服务");
+        setLoadError(cause instanceof ApiClientError ? cause.message : translate.current("unreachable"));
       } finally {
         if (current()) setLoading(false);
       }
@@ -284,7 +287,7 @@ export default function AgentPage() {
         keepDraft(activeSessionId, question);
       }
       dispatch({ type: "RESET" });
-      const message = cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : "提交失败，请稍后重试";
+      const message = cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : translate.current("submitFailed");
       setNotice({ message, action: "submit", resend });
     } finally {
       submitLock.current = false;
@@ -300,7 +303,7 @@ export default function AgentPage() {
       const result = (await apiPost<{ state: string }>(`/business-query/runs/${encodeURIComponent(state.runId)}/cancel`)).data;
       if (result.state === "cancelled") dispatch({ type: "EVENT", event: { seq: state.lastSeq + 1, type: "cancelled", data: { state: "cancelled" } } });
     } catch (cause) {
-      setNotice({ message: cause instanceof ApiClientError ? cause.message : "取消失败，请稍后再试", action: null });
+      setNotice({ message: cause instanceof ApiClientError ? cause.message : translate.current("cancelFailed"), action: null });
     }
   }, [state.lastSeq, state.runId]);
 
@@ -336,14 +339,15 @@ export default function AgentPage() {
       const entries = await Promise.all(limited.map(async (session): Promise<AgentHistoryEntry> => {
         try {
           const snapshot = (await apiGet<{ runs: AgentSnapshotRun[] }>(`/business-query/sessions/${encodeURIComponent(session.session_id)}`)).data;
-          return { ...session, title: session.title ?? sessionTitleFromRuns(snapshot.runs), runCount: snapshot.runs.length };
+          const derived = snapshot.runs.some((run) => run.question.trim()) ? sessionTitleFromRuns(snapshot.runs) : translate.current("emptySession");
+          return { ...session, title: session.title ?? derived, runCount: snapshot.runs.length };
         } catch {
-          return { ...session, title: session.title ?? "（会话内容无法读取）", runCount: 0 };
+          return { ...session, title: session.title ?? translate.current("unreadableSession"), runCount: 0 };
         }
       }));
       setHistoryEntries(entries);
     } catch (cause) {
-      setHistoryError(cause instanceof ApiClientError ? cause.message : "无法读取历史会话");
+      setHistoryError(cause instanceof ApiClientError ? cause.message : translate.current("historyFailed"));
     } finally {
       setHistoryLoading(false);
     }
@@ -366,7 +370,7 @@ export default function AgentPage() {
     try {
       await hydrateSession(targetSessionId, current);
     } catch (cause) {
-      if (current()) setLoadError(cause instanceof ApiClientError ? cause.message : "无法读取该会话");
+      if (current()) setLoadError(cause instanceof ApiClientError ? cause.message : translate.current("sessionFailed"));
     } finally {
       if (current()) setLoading(false);
     }
@@ -378,7 +382,7 @@ export default function AgentPage() {
       const result = (await apiPatch<{ title: string }>(`/business-query/sessions/${encodeURIComponent(targetSessionId)}`, { title })).data;
       setHistoryEntries((entries) => entries.map((entry) => (entry.session_id === targetSessionId ? { ...entry, title: result.title } : entry)));
     } catch (cause) {
-      setHistoryActionError(cause instanceof ApiClientError ? cause.message : "改名失败，请稍后再试");
+      setHistoryActionError(cause instanceof ApiClientError ? cause.message : translate.current("renameFailed"));
     }
   }, []);
 
@@ -392,13 +396,13 @@ export default function AgentPage() {
       startNewConversation();
       if (cache) void clearCachedSession(cache.store, cache.userId);
     } catch (cause) {
-      setHistoryActionError(cause instanceof ApiClientError ? cause.message : "删除失败，请稍后再试");
+      setHistoryActionError(cause instanceof ApiClientError ? cause.message : translate.current("removeFailed"));
     }
   }, [cache, keepDraft, sessionId, startNewConversation]);
 
   const themed = { "data-agent-theme": appearance.theme };
 
-  if (loading) return <div className={`agent-loading ${themeStyles.root}`} {...themed}><LoadingState label="正在准备迪礼顾问" /></div>;
+  if (loading) return <div className={`agent-loading ${themeStyles.root}`} {...themed}><LoadingState label={t("preparing")} /></div>;
   if (loadError) return <div className={`agent-loading ${themeStyles.root}`} {...themed}><ErrorState message={loadError} onRetry={() => window.location.reload()} /></div>;
 
   const allTurns = mergeTurns(history, turnFromActiveState(state));
@@ -428,7 +432,7 @@ export default function AgentPage() {
         busy={busy}
         canStop={Boolean(state.runId)}
         sendDisabled={syncing}
-        phaseLabel={PHASE_LABELS[state.phase]}
+        phaseLabel={state.phase === "idle" ? "" : t(PHASE_KEYS[state.phase])}
         notice={notice?.message ?? null}
         onRetryNotice={retryNotice}
         onDismissNotice={() => setNotice(null)}

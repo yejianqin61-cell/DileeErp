@@ -3,6 +3,7 @@
 
 import { useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AgentSettingsContext } from "../settings/settings";
+import { useTranslate } from "../i18n";
 import { renderMermaid } from "./mermaid";
 import styles from "./mermaid-diagram.module.css";
 
@@ -10,6 +11,7 @@ type Result = { code: string; svg: string | null };
 
 export function MermaidDiagram({ code, fallback }: { code: string; fallback: ReactNode }) {
   const [result, setResult] = useState<Result | null>(null);
+  const t = useTranslate();
   const dark = useContext(AgentSettingsContext).theme === "dark";
 
   useEffect(() => {
@@ -27,7 +29,7 @@ export function MermaidDiagram({ code, fallback }: { code: string; fallback: Rea
   if (result.svg === null) {
     return (
       <div>
-        <p className={styles.failure}>图表无法渲染</p>
+        <p className={styles.failure}>{t("diagramFailed")}</p>
         {fallback}
       </div>
     );

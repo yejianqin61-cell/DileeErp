@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslate } from "../../features/agent-chat/i18n";
 import Link from "next/link";
 import { History, LayoutDashboard, Plus, Sparkles } from "lucide-react";
 import { Button } from "../ui/button";
@@ -10,20 +11,21 @@ import { AgentSettingsMenu } from "./agent-settings-menu";
  * 没有面包屑、没有说明段落 —— 那是 ERP 表单页的语言，不是对话页的。
  */
 export function AgentToolbar({ busy, onNewConversation, onOpenHistory }: { busy: boolean; onNewConversation: () => void; onOpenHistory: () => void }) {
+  const t = useTranslate();
   // 运行中禁止切会话：后端同一时刻只允许一个活动 run，切走只会留下一条无人接管的流。
-  const blockedHint = busy ? "当前查询进行中，完成或停止后再操作" : undefined;
+  const blockedHint = busy ? t("busyHint") : undefined;
   return <header className="agent-toolbar">
     <div className="agent-toolbar-title">
       {/* 窄屏会把 ERP 侧栏让给对话（见 globals.css 的手机端规则），这里留一个回工作台的入口，
           避免手机上隐藏侧栏后走不出去。桌面端这个图标是隐藏的。 */}
-      <Link href="/" className="agent-toolbar-home" aria-label="返回工作台" title="返回工作台" data-testid="agent-toolbar-home"><LayoutDashboard size={16} /></Link>
+      <Link href="/" className="agent-toolbar-home" aria-label={t("backToDashboard")} title={t("backToDashboard")} data-testid="agent-toolbar-home"><LayoutDashboard size={16} /></Link>
       <span className="agent-toolbar-mark" aria-hidden="true"><Sparkles size={15} strokeWidth={1.9} /></span>
-      <h1 className="agent-toolbar-name">迪礼顾问</h1>
-      <span className="agent-toolbar-sub">订单、采购、生产与库存，一句话问清楚</span>
+      <h1 className="agent-toolbar-name">{t("appName")}</h1>
+      <span className="agent-toolbar-sub">{t("appSubtitle")}</span>
     </div>
     <div className="agent-toolbar-actions">
-      <Button variant="ghost" size="sm" onClick={onOpenHistory} disabled={busy} title={blockedHint ?? "查看本人的历史会话"} data-testid="agent-history-open"><History size={14} />历史记录</Button>
-      <Button variant="secondary" size="sm" onClick={onNewConversation} disabled={busy} title={blockedHint ?? "开始一段新的对话"} data-testid="agent-new-conversation"><Plus size={14} />新建对话</Button>
+      <Button variant="ghost" size="sm" onClick={onOpenHistory} disabled={busy} title={blockedHint ?? t("historyHint")} data-testid="agent-history-open"><History size={14} />{t("history")}</Button>
+      <Button variant="secondary" size="sm" onClick={onNewConversation} disabled={busy} title={blockedHint ?? t("newConversationHint")} data-testid="agent-new-conversation"><Plus size={14} />{t("newConversation")}</Button>
       <AgentSettingsMenu />
     </div>
   </header>;

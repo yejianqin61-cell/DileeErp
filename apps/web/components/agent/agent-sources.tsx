@@ -1,4 +1,5 @@
 import { FileText } from "lucide-react";
+import { useTranslate } from "../../features/agent-chat/i18n";
 import type { QuerySourceView } from "../../lib/business-query-state";
 import { sourceLabel, sourceTypeLabel, uniqueSources } from "../../lib/agent-sources";
 
@@ -7,10 +8,11 @@ import { sourceLabel, sourceTypeLabel, uniqueSources } from "../../lib/agent-sou
  * 这里只做去重与展示，点不动（还没有单据深链接口，不做好像能跳的假按钮）。
  */
 export function AgentSources({ sources }: { sources: QuerySourceView[] }) {
+  const t = useTranslate();
   const visible = uniqueSources(sources);
   if (visible.length === 0) return null;
-  return <div className="agent-sources" data-testid="business-query-sources" aria-label="回答来源">
-    <span className="agent-sources-label">来源</span>
+  return <div className="agent-sources" data-testid="business-query-sources" aria-label={t("sourcesLabel")}>
+    <span className="agent-sources-label">{t("sources")}</span>
     {visible.map((source, index) => <span className="agent-source" key={`${source.business_type}:${source.business_no}:${index}`} title={`${sourceTypeLabel(source.business_type)}：${source.business_no}`}>
       <FileText size={11} aria-hidden="true" />{sourceLabel(source)}
     </span>)}
