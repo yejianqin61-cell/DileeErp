@@ -40,6 +40,7 @@ export function openAgentCacheStore(): CacheStore | null {
     set: async (key, value) => { await run("readwrite", (store) => store.put(value, key)); },
     delete: async (key) => { await run("readwrite", (store) => store.delete(key)); },
     clear: async () => { await run("readwrite", (store) => store.clear()); },
+    keys: async () => (await run("readonly", (store) => store.getAllKeys())).map(String),
   };
   return instance;
 }

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Bell, ClipboardList, Coins, Factory, History, LayoutDashboard, LogOut, Package, ShieldCheck, Sparkles, UserCog, Users, WalletCards } from "lucide-react";
 import type { ReactNode } from "react";
+import { browserSessionStore, clearPrivateData } from "../../features/agent-chat/chat/drafts";
 import { openAgentCacheStore } from "../../lib/agent-cache-idb";
 import { cn } from "../../lib/utils";
 import { ApiClientError, apiPost } from "../../lib/api-client";
@@ -44,7 +45,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     });
   }, [pathname]);
   async function logout() {
-    const cleared = openAgentCacheStore()?.clear().catch(() => undefined);
+    const cleared = clearPrivateData(openAgentCacheStore(), browserSessionStore());
     await Promise.race([cleared, new Promise((resolve) => setTimeout(resolve, 1000))]);
     await apiPost("/auth/logout");
     window.location.href = "/login";

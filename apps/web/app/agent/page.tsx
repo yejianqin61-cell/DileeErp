@@ -6,6 +6,7 @@ import { AgentHistoryDialog, type AgentHistoryEntry } from "../../components/age
 import { AgentThread } from "../../components/agent/agent-thread";
 import { AgentToolbar } from "../../components/agent/agent-toolbar";
 import { ErrorState, LoadingState } from "../../components/feedback/states";
+import { browserSessionStore, loadDraft, saveDraft } from "../../features/agent-chat/chat/drafts";
 import { cacheAccessLevel, clearCachedSession, readCachedSession, writeCachedSession } from "../../lib/agent-cache";
 import { openAgentCacheStore } from "../../lib/agent-cache-idb";
 import { ApiClientError, apiDelete, apiGet, apiPatch, apiPost } from "../../lib/api-client";
@@ -60,6 +61,24 @@ export default function AgentPage() {
     const store = userId ? openAgentCacheStore() : null;
     return store && userId ? { store, userId, level } : null;
   }, [userId, level]);
+  const drafts = useMemo(() => (cache ? { ...cache, session: browserSessionStore() } : null), [cache]);
+  const typed = useRef(0);
+
+  const keepDraft = useCallback((target: string | null, text: string) => {
+    if (drafts) void saveDraft(drafts, target, text);
+  }, [drafts]);
+
+  const showDraft = useCallback((target: string | null, since = typed.current) => {
+    if (typed.current !== since) return;
+    setInput("");
+    if (drafts) void loadDraft(drafts, target).then((text) => { if (typed.current === since) setInput(text); });
+  }, [drafts]);
+
+  const edit = useCallback((text: string) => {
+    typed.current += 1;
+    setInput(text);
+    keepDraft(sessionId, text);
+  }, [keepDraft, sessionId]);
 
   const followStream = useCallback((runId: string, lastSeq: number) => {
     streamAbort.current?.abort();
@@ -113,6 +132,13 @@ export default function AgentPage() {
     let offline = false;
     const ticket = ++epoch.current;
     const current = () => !cancelled && ticket === epoch.current;
+    const since = typed.current;
+    let drafted: string | null | undefined;
+    const draftFor = (target: string | null) => {
+      if (drafted === target) return;
+      drafted = target;
+      showDraft(target, since);
+    };
     const accept = () => {
       if (!current()) return false;
       answered = true;
@@ -125,6 +151,7 @@ export default function AgentPage() {
         shown = true;
         setSessionId(cached.session_id);
         setHistory(cached.runs.map(turnFromSnapshotRun));
+        draftFor(cached.session_id);
         setLoading(false);
         if (offline) {
           setLoadError("");
@@ -142,8 +169,10 @@ export default function AgentPage() {
           if (cache) void clearCachedSession(cache.store, cache.userId);
           setSessionId(null);
           setHistory([]);
+          draftFor(null);
         } else {
           setSessionId(latest.session_id);
+          draftFor(latest.session_id);
           await hydrateSession(latest.session_id, accept);
         }
         if (current()) setSyncing(false);
@@ -169,7 +198,7 @@ export default function AgentPage() {
       cancelled = true;
       streamAbort.current?.abort();
     };
-  }, [cache, hydrateSession]);
+  }, [cache, hydrateSession, showDraft]);
 
   const revoked = state.error?.code === "ACCESS_REVOKED";
   const previousPhase = useRef(state.phase);
@@ -202,10 +231,10 @@ export default function AgentPage() {
     const settled = turnFromActiveState(state);
     if (settled) setHistory((previous) => mergeTurns(previous, settled));
     dispatch({ type: "SUBMIT", question, sessionId: sessionId ?? "pending" });
-    setInput("");
+    if (questionOverride === undefined) setInput("");
     setScrollSignal((value) => value + 1);
+    let activeSessionId = sessionId;
     try {
-      let activeSessionId = sessionId;
       if (!activeSessionId) {
         activeSessionId = (await apiPost<{ session_id: string }>("/business-query/sessions")).data.session_id;
         setSessionId(activeSessionId);
@@ -215,16 +244,19 @@ export default function AgentPage() {
         client_message_id: createClientMessageId(),
       })).data;
       dispatch({ type: "RUN_CREATED", runId: created.run_id });
+      if (questionOverride === undefined) keepDraft(sessionId, "");
       followStream(created.run_id, 0);
     } catch (cause) {
       setInput(question);
+      if (activeSessionId !== sessionId) keepDraft(sessionId, "");
+      keepDraft(activeSessionId, question);
       dispatch({ type: "RESET" });
       const message = cause instanceof ApiClientError ? cause.message : cause instanceof Error ? cause.message : "提交失败，请稍后重试";
       setNotice({ message, action: "submit" });
     } finally {
       submitLock.current = false;
     }
-  }, [followStream, input, sessionId, state, syncing]);
+  }, [followStream, input, keepDraft, sessionId, state, syncing]);
 
   const submitRef = useRef(submit);
   useEffect(() => { submitRef.current = submit; }, [submit]);
@@ -242,10 +274,10 @@ export default function AgentPage() {
   const retryTurn = useCallback((question: string) => { void submitRef.current(question); }, []);
 
   const pickSuggestion = useCallback((question: string) => {
-    setInput(question);
+    edit(question);
     setNotice(null);
     setTimeout(() => inputRef.current?.focus(), 0);
-  }, []);
+  }, [edit]);
 
   const startNewConversation = useCallback(() => {
     if (isBusyPhase(state.phase)) return;
@@ -253,12 +285,12 @@ export default function AgentPage() {
     setSyncing(false);
     streamAbort.current?.abort();
     setNotice(null);
-    setInput("");
     setHistory([]);
     setSessionId(null);
+    showDraft(null);
     dispatch({ type: "RESET" });
     setTimeout(() => inputRef.current?.focus(), 0);
-  }, [state.phase]);
+  }, [showDraft, state.phase]);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -294,6 +326,7 @@ export default function AgentPage() {
     setNotice(null);
     setSessionId(targetSessionId);
     setHistory([]);
+    showDraft(targetSessionId);
     dispatch({ type: "RESET" });
     setLoadError("");
     setLoading(true);
@@ -304,7 +337,7 @@ export default function AgentPage() {
     } finally {
       if (current()) setLoading(false);
     }
-  }, [hydrateSession, sessionId]);
+  }, [hydrateSession, sessionId, showDraft]);
 
   const renameSession = useCallback(async (targetSessionId: string, title: string) => {
     setHistoryActionError("");
@@ -321,13 +354,14 @@ export default function AgentPage() {
     try {
       await apiDelete(`/business-query/sessions/${encodeURIComponent(targetSessionId)}`);
       setHistoryEntries((entries) => entries.filter((entry) => entry.session_id !== targetSessionId));
+      keepDraft(targetSessionId, "");
       if (targetSessionId !== sessionId) return;
       startNewConversation();
       if (cache) void clearCachedSession(cache.store, cache.userId);
     } catch (cause) {
       setHistoryActionError(cause instanceof ApiClientError ? cause.message : "删除失败，请稍后再试");
     }
-  }, [cache, sessionId, startNewConversation]);
+  }, [cache, keepDraft, sessionId, startNewConversation]);
 
   if (loading) return <div className="agent-loading"><LoadingState label="正在准备迪礼顾问" /></div>;
   if (loadError) return <div className="agent-loading"><ErrorState message={loadError} onRetry={() => window.location.reload()} /></div>;
@@ -345,7 +379,7 @@ export default function AgentPage() {
       <AgentThread turns={turns} onPickSuggestion={pickSuggestion} onRetryTurn={retryTurn} scrollSignal={scrollSignal} />
       <AgentComposer
         value={input}
-        onChange={setInput}
+        onChange={edit}
         onSubmit={() => { void submit(); }}
         onStop={() => { void cancel(); }}
         busy={busy}
