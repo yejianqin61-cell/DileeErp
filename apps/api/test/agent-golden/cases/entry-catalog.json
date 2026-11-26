@@ -1,0 +1,18 @@
+[
+  {
+    "id": "entry-catalog-list",
+    "group": "entry",
+    "question": "最近有哪些已确认的销售订单",
+    "expect": {
+      "terminal": "completed",
+      "opsInclude": [
+        "list_documents"
+      ],
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  }
+]

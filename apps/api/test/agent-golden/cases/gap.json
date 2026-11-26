@@ -1,0 +1,342 @@
+[
+  {
+    "id": "gap-01",
+    "group": "gap",
+    "question": "按供应商汇总本月采购金额",
+    "gap": {
+      "class": "gap",
+      "nearest": "get_payables"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-02",
+    "group": "gap",
+    "question": "最近六个月每月的销售订单数量趋势",
+    "gap": {
+      "class": "gap",
+      "nearest": "list_documents"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-03",
+    "group": "gap",
+    "question": "各个仓库的原料库存分别是多少",
+    "gap": {
+      "class": "gap",
+      "nearest": "list_low_stock_materials"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-04",
+    "group": "gap",
+    "question": "本月所有订单的应收账款总额是多少",
+    "gap": {
+      "class": "gap",
+      "nearest": "get_receivables"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-05",
+    "group": "gap",
+    "question": "每个客户累计下了多少张订单",
+    "gap": {
+      "class": "gap",
+      "nearest": "list_documents"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-06",
+    "group": "gap",
+    "question": "每个员工本月报工总量排名",
+    "gap": {
+      "class": "gap",
+      "nearest": "get_order_payroll"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-07",
+    "group": "gap",
+    "question": "哪些供应商的采购单延期最多",
+    "gap": {
+      "class": "gap",
+      "nearest": "list_overdue_arrivals"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-08",
+    "group": "gap",
+    "question": "这个月和上个月的成品出库数量对比",
+    "gap": {
+      "class": "gap",
+      "nearest": "get_finished_goods_outbounds"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-09",
+    "group": "gap",
+    "question": "管理费用科目本月发生额是多少",
+    "gap": {
+      "class": "gap",
+      "nearest": "get_order_cost_profit"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "gap-10",
+    "group": "gap",
+    "question": "全公司各订单的毛利排名",
+    "gap": {
+      "class": "gap",
+      "nearest": "get_order_cost_profit"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-01",
+    "group": "gap",
+    "question": "有哪些采购单已经过了预计到货日还没到齐",
+    "gap": {
+      "class": "decoy",
+      "nearest": "list_overdue_arrivals"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-02",
+    "group": "gap",
+    "question": "仓库里什么料快没了",
+    "gap": {
+      "class": "decoy",
+      "nearest": "list_low_stock_materials"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-03",
+    "group": "gap",
+    "question": "上个月更新过的、已确认的单子列一下",
+    "gap": {
+      "class": "decoy",
+      "nearest": "list_documents"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-04",
+    "group": "gap",
+    "question": "单号里带 0001 的销售订单有哪些",
+    "gap": {
+      "class": "decoy",
+      "nearest": "search_documents"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-05",
+    "group": "gap",
+    "question": "MOCK-ORD-001 现在走到哪个环节了",
+    "gap": {
+      "class": "decoy",
+      "nearest": "get_order_overview"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-06",
+    "group": "gap",
+    "question": "MOCK-ORD-001 的客户是谁",
+    "gap": {
+      "class": "decoy",
+      "nearest": "get_customer"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-07",
+    "group": "gap",
+    "question": "MOCK-ORD-001 货发出去多少了",
+    "gap": {
+      "class": "decoy",
+      "nearest": "get_finished_goods_outbounds"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-08",
+    "group": "gap",
+    "question": "MOCK-ORD-001 的来料质检都合格吗",
+    "gap": {
+      "class": "decoy",
+      "nearest": "get_incoming_inspections"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-09",
+    "group": "gap",
+    "question": "MOCK-ORD-001 用了哪些物料、各要多少",
+    "gap": {
+      "class": "decoy",
+      "nearest": "get_bom"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  },
+  {
+    "id": "decoy-10",
+    "group": "gap",
+    "question": "MOCK-ORD-001 每道工序做完了多少",
+    "gap": {
+      "class": "decoy",
+      "nearest": "get_operation_progress"
+    },
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": [
+        "AGENT_INTERNAL_ERROR",
+        "AGENT_RUN_TIMEOUT",
+        "AGENT_TOOL_RETRIES_EXHAUSTED"
+      ]
+    }
+  }
+]
