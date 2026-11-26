@@ -4,9 +4,10 @@
 import Prism from "prismjs";
 import { useEffect, useMemo, useReducer } from "react";
 import { getHighlightLang, isHighlightLoaded, loadHighlight } from "./highlight";
+import { MermaidDiagram } from "./mermaid-diagram";
 import styles from "./code-block.module.css";
 
-export function CodeBlock({ code, language }: { code: string; language: string }) {
+export function CodeBlock({ code, language, streaming }: { code: string; language: string; streaming: boolean }) {
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   const lang = getHighlightLang(language);
   const loaded = lang !== null && isHighlightLoaded(lang);
@@ -23,7 +24,7 @@ export function CodeBlock({ code, language }: { code: string; language: string }
 
   const html = useMemo(() => (lang !== null && loaded ? Prism.highlight(code, Prism.languages[lang], lang) : null), [code, lang, loaded]);
 
-  return (
+  const block = (
     <div className="agent-md-code">
       <div className="agent-md-code-head"><span>{language || "代码"}</span></div>
       <pre className={`agent-md-pre ${styles.code}`}>
@@ -31,4 +32,6 @@ export function CodeBlock({ code, language }: { code: string; language: string }
       </pre>
     </div>
   );
+
+  return !streaming && language.toLowerCase() === "mermaid" ? <MermaidDiagram code={code} fallback={block} /> : block;
 }

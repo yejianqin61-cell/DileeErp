@@ -1,0 +1,9 @@
+.diagram {
+  overflow-x: auto;
+}
+
+.failure {
+  margin: 0 0 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}

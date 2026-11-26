@@ -1,12 +1,14 @@
 "use client";
 
-import { Fragment, useMemo, type ReactNode } from "react";
-import type { List, ListItem, Nodes, PhrasingContent, RootContent, Table } from "mdast";
+import { createContext, Fragment, useContext, useMemo, type ReactNode } from "react";
+import type { Code, List, ListItem, Nodes, PhrasingContent, RootContent, Table } from "mdast";
 import { CodeBlock } from "../../features/agent-chat/markdown/code-block";
 import { InlineMath, MathBlock } from "../../features/agent-chat/markdown/math";
 import { toMdAst } from "../../features/agent-chat/markdown/parse";
 import { useThrottledText } from "../../features/agent-chat/markdown/use-throttled-text";
 import { cn } from "../../lib/utils";
+
+const Streaming = createContext(false);
 
 export function AgentMarkdown({ text, className, caret = false }: { text: string; className?: string; caret?: boolean }) {
   const shown = useThrottledText(text, caret);
@@ -14,9 +16,13 @@ export function AgentMarkdown({ text, className, caret = false }: { text: string
 
   return (
     <div className={cn("agent-md", className)} data-testid="agent-markdown">
-      {renderBlocks(blocks, caret)}
+      <Streaming.Provider value={caret}>{renderBlocks(blocks, caret)}</Streaming.Provider>
     </div>
   );
+}
+
+function Fence({ block }: { block: Code }) {
+  return <CodeBlock code={block.value} language={block.lang ?? ""} streaming={useContext(Streaming)} />;
 }
 
 function Caret() {
@@ -40,7 +46,7 @@ function renderBlock(block: RootContent, caret: boolean): ReactNode {
     case "math":
       return <MathBlock value={block.value} />;
     case "code":
-      return <CodeBlock code={block.value} language={block.lang ?? ""} />;
+      return <Fence block={block} />;
     case "list":
       return renderList(block, caret);
     case "table":
