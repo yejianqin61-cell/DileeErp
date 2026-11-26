@@ -169,6 +169,30 @@ test("跨订单领料硬门禁：超过来源订单可用库存直接 422，不�
   );
 });
 
+test("提交待出库也预占来源库存；复核本单时排除自己", async () => {
+  const queries = [];
+  const prisma = {
+    rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: new Prisma.Decimal("10") } }) },
+    inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal("0") } }) },
+    rawMaterialMovementRisk: {
+      findMany: async (args) => {
+        queries.push(args);
+        return [{ context: {
+          material_id: "material-1", unit_id: "unit-1", supplier_id: "supplier-1",
+          source_production_order_id: "order-2", quantity: "4",
+        } }];
+      },
+    },
+  };
+  const service = new RawMaterialMovementsService(prisma, audit, {});
+  const available = await service.crossOrderAvailable(prisma, { id: "order-2", orderNo: "SO-002" }, "material-1", "unit-1", "supplier-1");
+  assert.equal(available.toString(), "6", "来源可用量 = 入库 10 − 已提交待出库预占 4");
+  assert.deepEqual(queries[0].where.movement.is.status.in, ["posted", "pending_outbound"], "待出库也必须预占来源库存");
+
+  await service.crossOrderAvailable(prisma, { id: "order-2", orderNo: "SO-002" }, "material-1", "unit-1", "supplier-1", "movement-1");
+  assert.deepEqual(queries[1].where.movement.is.id, { not: "movement-1" }, "复核本单时不能把自己的预占当成别人占用");
+});
+
 test("跨订单领料过账：事务内复核仍带来源单位与来源订单，库存事实按来源单位扣减", async () => {
   const sourceContext = {
     material_id: "material-1", unit_id: "unit-other", supplier_id: "supplier-1",
@@ -199,9 +223,11 @@ test("跨订单领料过账：事务内复核仍带来源单位与来源订单�
   };
   const service = new RawMaterialMovementsService(prisma, audit, {});
   let lockedLines = null;
-  service.previewLines = async (_order, lines) => { lockedLines = lines; return { lines: [] }; };
+  let excludeMovementId = null;
+  service.previewLines = async (_order, lines, _client, excluded) => { lockedLines = lines; excludeMovementId = excluded; return { lines: [] }; };
   await service.postIssue("movement-1", "idem-1", user);
   assert.equal(lockedLines[0].unit_id, "unit-other", "复核必须用来源库存单位，不能回落到默认单位");
+  assert.equal(excludeMovementId, "movement-1", "过账复核要排除本单自己的待出库预占");
   assert.equal(lockedLines[0].source_production_order_id, "order-2");
   assert.equal(facts.length, 1);
   assert.equal(facts[0].unitId, "unit-other");

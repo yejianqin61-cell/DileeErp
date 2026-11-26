@@ -405,7 +405,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
       </div>
     </section>
     {crossOrderAllowed && <section className="panel" data-testid="cross-order-material-picker">
-      <div className="panel-heading"><h2>从其他生产订单调料</h2><span className="panel-note">按物料名称检索其他订单已入库、尚未领用的库存；领取过账后从来源订单可用量中扣减，并留存来源生产单与订单号，可追溯；领用量不能超过来源订单可用库存</span></div>
+      <div className="panel-heading"><h2>从其他生产订单调料</h2><span className="panel-note">按物料名称检索其他订单已入库、尚未领用的库存；提交仓库后即从来源订单可用量中扣减并预占，仓库过账后正式出库；留存来源生产单与订单号可追溯；领用量不能超过来源订单可用库存</span></div>
       <div className="panel-body">
         <div className="filter-bar">
           <label>物料名称

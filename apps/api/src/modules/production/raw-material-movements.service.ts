@@ -168,7 +168,7 @@ export class RawMaterialMovementsService {
 
   async impactPreview(id: string) {
     const movement = await this.get(id);
-    const preview = await this.previewLines(movement.productionOrder, this.linesWithCrossOrderSource(movement));
+    const preview = await this.previewLines(movement.productionOrder, this.linesWithCrossOrderSource(movement), this.prisma, movement.id);
     return { movement_no: movement.movementNo, order_no: movement.orderNo, production_order_no: movement.productionOrder.productionOrderNo, status: movement.status, ...preview };
   }
 
@@ -204,7 +204,7 @@ export class RawMaterialMovementsService {
     if (!["issue", "replenishment"].includes(movement.documentType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "只有领料单或补料单需要仓库确认出库", details: [] });
     if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有草稿单据可以提交仓库（当前：${movement.status}）`, details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
-    const preview = await this.previewLines(order, this.linesWithCrossOrderSource(movement));
+    const preview = await this.previewLines(order, this.linesWithCrossOrderSource(movement), this.prisma, id);
     if (preview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "提交后原料库存不足，请先补货或减少领用数量", details: preview.lines.filter((line) => line.available_after.isNegative()).map((line) => ({ material_id: line.material_id, available_quantity: line.available_before.toString() })) });
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM raw_material_movements WHERE id = ${id}::uuid FOR UPDATE`;
@@ -237,7 +237,7 @@ export class RawMaterialMovementsService {
     if (movement.status === "posted" && movement.idempotencyKey === idempotencyKey) return movement;
     if (movement.status !== "pending_outbound") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有已确认待出库的${label}单可以出库；草稿请先由生产「确认提交」，当前状态：${movement.status}`, details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
-    const preview = await this.previewLines(order, this.linesWithCrossOrderSource(movement));
+    const preview = await this.previewLines(order, this.linesWithCrossOrderSource(movement), this.prisma, id);
     // 超领/非 BOM 物料不再阻塞过账（业务确认该门禁没有必要）；风险仍在事务内照常记录，仅作审计留痕。
     if (preview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: `${label}会造成原料库存不足`, details: preview.lines.filter((line) => line.available_after.isNegative()).map((line) => ({ material_id: line.material_id, available_quantity: line.available_before.toString() })) });
 
@@ -256,7 +256,7 @@ export class RawMaterialMovementsService {
         for (const key of materialKeys) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
         // 用 linesWithCrossOrderSource 还原 unit_id / 来源生产单：跨订单行按来源库存单位记账，
         // 不能用默认单位复核余额，否则张/个混账时会误判库存不足。
-        const lockedPreview = await this.previewLines(lockedOrder, this.linesWithCrossOrderSource(current), tx);
+        const lockedPreview = await this.previewLines(lockedOrder, this.linesWithCrossOrderSource(current), tx, id);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: `${label}会造成原料库存不足`, details: [] });
         // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined），按 material_id + unit_id + supplier_id 关联 current.lines
         const dbLineByMaterial = new Map(current.lines.map((dbLine) => [`${dbLine.materialId}|${dbLine.unitId}|${dbLine.supplierId ?? "__none__"}`, dbLine]));
@@ -523,11 +523,15 @@ export class RawMaterialMovementsService {
   }
 
   /**
-   * 来源订单已经被**其他生产单跨订单借走**的数量（只算已过账领料单）。
+   * 来源订单已经被**其他生产单跨订单预占/借走**的数量。
+   *
+   * 计入 `pending_outbound`：生产「保存并提交仓库」后，来源可用量应立即扣减，
+   * 否则提交完再查来源订单仍显示原数量，和用户看到的「已提交」不一致。
+   * 复核本单自身时传 excludeMovementId 排除自己（本单的预占不能把自己拦下）。
    *
    * 库存仍是物料级结存（不新增订单库存表）：跨订单领料写出的库存事实仍归领用方订单，
    * 所以来源订单的可用量必须在这里按风险留痕扣一次，否则「借走之后来源单还能无限再借」。
-   * 领料单回退草稿/冲销后状态不再是 posted，这里自然不再扣，来源可用量随之恢复。
+   * 领料单回退草稿/冲销后状态不再是 posted/pending_outbound，这里自然不再扣，来源可用量随之恢复。
    */
   private async crossOrderBorrowed(
     client: PrismaService | Prisma.TransactionClient,
@@ -535,12 +539,20 @@ export class RawMaterialMovementsService {
     materialId: string,
     unitId: string,
     supplierId: string | null,
+    excludeMovementId?: string,
   ) {
     const risks = await client.rawMaterialMovementRisk.findMany({
       where: {
         riskType: CROSS_ORDER_SOURCE,
         deletedAt: null,
-        movement: { is: { documentType: "issue", status: "posted", deletedAt: null } },
+        movement: {
+          is: {
+            documentType: "issue",
+            status: { in: ["posted", "pending_outbound"] },
+            deletedAt: null,
+            ...(excludeMovementId ? { id: { not: excludeMovementId } } : {}),
+          },
+        },
         context: { path: ["source_production_order_id"], equals: sourceProductionOrderId },
       },
       select: { context: true },
@@ -557,20 +569,21 @@ export class RawMaterialMovementsService {
     return borrowed;
   }
 
-  /** 来源订单该物料「已入库 − 来源单已领用 − 已被其他订单借走」的剩余量。库存本身仍是物料级结存。 */
+  /** 来源订单该物料「已入库 − 来源单已领用 − 已被其他订单预占/借走」的剩余量。库存本身仍是物料级结存。 */
   private async crossOrderAvailable(
     client: PrismaService | Prisma.TransactionClient,
     source: { id: string; orderNo: string },
     materialId: string,
     unitId: string,
     supplierId: string | null,
+    excludeMovementId?: string,
   ) {
     // 原料入库行的 supplierId 是非空列：来源可用量只在明确到具体供应商时才有意义。
     if (!supplierId) return new Prisma.Decimal(0);
     const [inbound, facts, borrowed] = await Promise.all([
       client.rawMaterialInbound.aggregate({ where: { materialId, orderNo: source.orderNo, unitId, supplierId, status: "posted", deletedAt: null }, _sum: { quantity: true } }),
       client.inventoryFact.aggregate({ where: { productionOrderId: source.id, materialId, unitId, supplierId, inventoryCategory: { in: ["raw_material", "scrap"] } }, _sum: { quantityDelta: true } }),
-      this.crossOrderBorrowed(client, source.id, materialId, unitId, supplierId),
+      this.crossOrderBorrowed(client, source.id, materialId, unitId, supplierId, excludeMovementId),
     ]);
     return new Prisma.Decimal(inbound._sum?.quantity ?? 0).plus(facts._sum?.quantityDelta ?? 0).minus(borrowed);
   }
@@ -705,7 +718,7 @@ export class RawMaterialMovementsService {
     return { items: candidates.slice(0, 50) };
   }
 
-  private async previewLines(order: { id: string; orderNo: string; bomId: string | null }, lines: IssueLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma) {
+  private async previewLines(order: { id: string; orderNo: string; bomId: string | null }, lines: IssueLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma, excludeMovementId?: string) {
     if (!Array.isArray(lines) || lines.length === 0) throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_LINES_REQUIRED", message: "领料单至少需要一条物料明细", details: [] });
     const seen = new Set<string>();
     const previewLines = [];
@@ -733,7 +746,7 @@ export class RawMaterialMovementsService {
       const sourceBomItem = crossOrder?.bomId ? await client.bomItem.findFirst({ where: { bomId: crossOrder.bomId, materialId: material.id, deletedAt: null } }) : null;
       const resolvedUnitId = unitOverride?.id ?? (crossOrder ? sourceBomItem?.unitId : bomItem?.unitId) ?? material.defaultUnitId;
       const resolvedUnitName = unitOverride?.name ?? (crossOrder ? sourceBomItem?.unit : bomItem?.unit) ?? null;
-      const sourceAvailable = crossOrder ? await this.crossOrderAvailable(client, crossOrder, material.id, resolvedUnitId, line.supplier_id ?? null) : null;
+      const sourceAvailable = crossOrder ? await this.crossOrderAvailable(client, crossOrder, material.id, resolvedUnitId, line.supplier_id ?? null, excludeMovementId) : null;
       // 跨订单领料硬门禁：不允许超过来源订单当前可用库存。
       // 放在其他余额/采购查询之前，超量时直接 422，不把「其实领不出来」的明细算出一堆数字再让用户保存失败。
       const requestedQuantity = new Prisma.Decimal(line.quantity);
