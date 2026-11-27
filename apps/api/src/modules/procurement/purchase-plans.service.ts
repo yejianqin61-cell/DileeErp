@@ -882,7 +882,12 @@ export class PurchasePlansService {
     if (next.material_id !== item.materialId) return "物料";
     if (next.unit_id !== item.unitId) return "单位";
     if ((item.supplierId ?? null) !== (next.supplier_id ?? null)) return "供应商";
-    if ((item.model ?? null) !== (next.model ?? null)) return "型号";
+    // 型号的空值归一：库里历史行可能是 `""`（BOM/导入写进来的空串），而前端 `itemsPayload()`
+    // 用 `row.model || undefined` 回传，空串会被省略成 `undefined`。若直接比 `"" !== null`，
+    // 每次保存都会被误判成「改了型号」而 422 —— DL260215 的 PP-20261102-86CAB4F0 正是这样
+    // 被卡住的（第 5 行吊牌已下单、model 为空串）。只把「空串 / null / undefined」视作同一种空，
+    // 真正的型号修改仍然会被这一条拦住。
+    if ((item.model ?? "") !== (next.model ?? "")) return "型号";
     if (!this.decimalEquals(item.quantity, next.quantity)) return "数量";
     if (!options.allowPrice && !this.decimalEquals(item.unitPrice, next.unit_price)) return "单价";
     return null;
