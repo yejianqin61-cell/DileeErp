@@ -1,6 +1,6 @@
 "use client";
 
-// 原料流转单据的两个只读弹窗：库存影响、详情与审计上下文。
+// 原料流转单据的两个弹窗：库存影响（只读）、详情与审计上下文（含凭证上传）。
 import { useEffect, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -10,6 +10,7 @@ import { RecordDetailDialog } from "../finance/record-detail-dialog";
 import { ApiClientError, apiGet } from "../../lib/api-client";
 import { formatBeijingShort } from "../../lib/audit-time";
 import { movementRiskLabels } from "../../lib/material-movement-derived";
+import { MovementVoucherUpload } from "./material-movement-voucher";
 
 export type DialogMovement = {
   id: string;
@@ -103,9 +104,6 @@ export function MovementAuditDialog({ movement, typeLabel, statusLabel, onClose 
     onOpenChange={(open) => { if (!open) onClose(); }}
     title={`库存单详情与审计上下文：${movement?.movementNo ?? ""}`}
     testId="material-movement-audit"
-    loading={Boolean(movement) && !data && !error}
-    error={error}
-    onRetry={retry}
     fields={movement ? [
       { label: "单据号", value: movement.movementNo },
       { label: "类型", value: typeLabel },
@@ -116,9 +114,13 @@ export function MovementAuditDialog({ movement, typeLabel, statusLabel, onClose 
       { label: "原因", value: movement.reason, wide: true },
       { label: "备注", value: movement.remark, wide: true },
     ] : []}
-    sections={data ? [{
-      title: `审计记录（${data.length} 条）`,
-      content: <DataTable columns={auditEventColumns} data={data} empty={<EmptyState title="没有审计记录" />} />,
-    }] : []}
+    // 加载态与错误态放在审计记录自己的区块里：审计记录读不到时，单据信息与凭证上传仍然可用。
+    sections={movement ? [
+      { title: "凭证", content: <MovementVoucherUpload key={movement.id} movementId={movement.id} /> },
+      {
+        title: data ? `审计记录（${data.length} 条）` : "审计记录",
+        content: error ? <ErrorState message={error} onRetry={retry} /> : !data ? <LoadingState /> : <DataTable columns={auditEventColumns} data={data} empty={<EmptyState title="没有审计记录" />} />,
+      },
+    ] : []}
   />;
 }
