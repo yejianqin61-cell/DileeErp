@@ -270,7 +270,7 @@ describe("采购 → BOM表：删除 BOM（2026-11-05）", () => {
     render(<><BomsPage /><Toaster /></>);
     await screen.findByTestId("page-procurement-boms");
 
-    expect(await screen.findByText("SO-GONE")).toBeVisible();
+    await waitFor(() => expect(screen.getByText("SO-GONE")).toBeVisible());
     await userEvent.click(await screen.findByTestId("bom-delete-SO-GONE"));
     await screen.findByTestId("action-dialog");
     await userEvent.click(within(screen.getByTestId("action-dialog")).getByTestId("action-dialog-submit"));
@@ -280,6 +280,45 @@ describe("采购 → BOM表：删除 BOM（2026-11-05）", () => {
     expect(del.url).toBe(`${EP.boms}/bom-orphan`);
     // 行 id 是 salesOrderId（so-gone）—— 拿它当删除目标会 404，绝不能出现在 URL 里
     expect(del.url).not.toContain("so-gone");
+  });
+});
+
+/**
+ * 已存在的 BOM 不能因为父销售单不在「已确认」列表里就消失（T-0029，2026-11-24）。
+ *
+ * 用户原话：「在销售订单里已建好DL260224销售单，在采购版块找不到对应的DL260224单BOM」。
+ * 取数只拿 `status=confirmed` 的销售单，而 BOM 仍可能在 `/boms` 里：父单已关闭、父单状态变化后
+ * 不在取数范围、或超出 200 张取数上限。原来只补 `orphaned` 的行，这些 BOM 就既看不见也打不开；
+ * 这张表是 BOM 的入口，**任何未删除的 BOM 都必须列出来**。
+ *
+ * 这里用「父单不在销售单列表 + BOM 非孤立」复现：行要出现、不是孤立徽章、点「编辑BOM表」能打开。
+ */
+describe("采购 → BOM表：父销售单不在已确认列表时，BOM 仍可见（T-0029）", () => {
+  it("DL260224 的父单不在列表（例如已关闭）也能找到它的 BOM 并打开", async () => {
+    const calls = stubApi((url, call) => {
+      if (url.startsWith(`${EP.salesOrders}?status=draft`)) return apiOk([]);
+      // 已确认列表为空：父单可能已关闭，或落在 200 张之外 —— BOM 只能从 /boms 补进来
+      if (url.startsWith(EP.salesOrders)) return apiOk([]);
+      if (url === EP.boms && call.method === "GET") return apiOk([{ id: "bom-224", salesOrderId: "so-224", orderNo: "DL260224", status: "draft", version: 1, orphaned: false }]);
+      if (url === `${EP.boms}/bom-224` && call.method === "GET") return apiOk({ ...bomWithOneItem, id: "bom-224", orderNo: "DL260224", salesOrderId: "so-224" });
+      return apiOk([]);
+    });
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+
+    // 用 waitFor 而不是「findBy 之后立刻断言可见」：两段数据（/boms 与 /sales-orders）各自
+    // 触发一次渲染，表格可能在两次渲染之间被替换 —— 断言必须落在**当前**节点上。
+    await waitFor(() => expect(screen.getByText("DL260224")).toBeVisible());
+    const row = screen.getByText("DL260224").closest("tr")!;
+    // 父单只是不在列表里，并没有被删除：不能误标「孤立」，入口必须是「编辑」而不是「新建」
+    expect(within(row).queryByTestId("orphan-badge")).toBeNull();
+    expect(within(row).getByRole("button", { name: "编辑BOM表" })).toBeVisible();
+
+    await userEvent.click(within(row).getByRole("button", { name: "编辑BOM表" }));
+    // 打开的是真实 BOM（bom-224），不是拿 salesOrderId（so-224）去请求
+    expect(await screen.findByDisplayValue("3")).toBeVisible();
+    expect(calls.some((call) => call.url === `${EP.boms}/bom-224` && call.method === "GET")).toBe(true);
+    expect(calls.some((call) => call.url === `${EP.boms}/so-224`)).toBe(false);
   });
 });
 

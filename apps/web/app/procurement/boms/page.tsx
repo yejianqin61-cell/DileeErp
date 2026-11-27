@@ -265,9 +265,10 @@ export default function BomsPage() {
    *    ⚠️ 过滤已经交给服务端 —— **不要**在这里再过滤一次：那正是 2026-10-13 那个缺陷的形态
    *    （前端拿到最近 20 张任意状态的单再过滤 → 整页空）。
    *
-   * ② 孤立的 BOM（2026-11-03）：父销售单被软删后，BOM 行仍在 `/boms` 里（`deleted_at` 为空），
-   *    但那张销售单已经不在 `/sales-orders` 列表里了。不把 `/boms` 里 `orphaned` 的行补进来，
-   *    这些 BOM 就**既看不见也打不开**（它们是删单后留下的单据里排在最前面的一类）。
+   * ② 不在上面那份「已确认」销售单列表里的 BOM：这张表是 BOM 的入口，**任何未删除的 BOM
+   *    都必须看得见、打得开**。父销售单被软删时是「孤立 BOM」（2026-11-03）；父单已关闭、状态变化后
+   *    不在取数范围、或超出 200 张取数上限时，BOM 同样还在 `/boms` 里（`deleted_at` 为空）——
+   *    不补进来，采购就会看到「这张单没有 BOM」，而 BOM 其实存在（2026-11-24 DL260224 的形态）。
    *    `id` 换成 salesOrderId：`createOrOpenBom` 靠它找回既有 BOM，与在册行同一口径；
    *    同一张销售单可能有多版 BOM，按 salesOrderId 去重、保留 /boms 给出的第一行（version desc）。
    */
@@ -275,9 +276,9 @@ export default function BomsPage() {
   const shownSalesOrderIds = new Set(salesOrders.map((order) => order.id));
   for (const bom of boms) {
     const salesOrderId = bom.salesOrderId;
-    if (!bom.orphaned || !salesOrderId || shownSalesOrderIds.has(salesOrderId)) continue;
+    if (!salesOrderId || shownSalesOrderIds.has(salesOrderId)) continue;
     shownSalesOrderIds.add(salesOrderId);
-    // 额外保留真实 BOM id（`bom_id`）：行 id 被换成了 salesOrderId，删除入口只能认这一份（2026-11-05）。
+    // 额外保留真实 BOM id（`bom_id`）：行 id 被换成了 salesOrderId，打开/删除入口只能认这一份（2026-11-05）。
     bomRows.push({ ...bom, bom_id: bom.id, id: salesOrderId, orderNo: bom.orderNo ?? "-" });
   }
   const bomEmptyHint = draftCount
