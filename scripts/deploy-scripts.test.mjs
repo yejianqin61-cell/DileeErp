@@ -59,6 +59,30 @@ test("切换脚本按标准做成功判定，且只清理 app.backup-*", () => {
   assert.doesNotMatch(switchSh, /rm -rf .*app\.failed/, "app.failed-* 必须保留用于排查");
 });
 
+test("构建前回收旧候选目录，并带磁盘闸门", () => {
+  // 背景（2026-11-28 实测）：每次构建解出约 2.7G 的 app.release-*，切换只搬走最后一个，
+  // 旧的没人清 —— 积了 3 个共 6.8G，把根分区推到 88%，再落一次失败构建就可能写满。
+  assert.match(build, /reclaim_old_candidates/, "必须有回收旧候选目录的步骤");
+  assert.match(build, /require_free_disk/, "必须有磁盘闸门");
+  assert.match(build, /MIN_FREE_GB=/, "磁盘门槛必须可配置");
+  assert.match(build, /app\.release-\*/, "回收目标为 app.release-*");
+  assert.match(build, /reclaim_old_candidates\n/, "回收函数必须被调用，不能只定义");
+
+  // 三条不该被误删的：回滚目标、排查证据、当前线上目录。
+  const reclaimBlock = build.slice(
+    build.indexOf("reclaim_old_candidates()"),
+    build.indexOf("require_free_disk()"),
+  );
+  assert.doesNotMatch(reclaimBlock, /app\.backup/, "回收不得碰 app.backup-*（回滚目标）");
+  assert.doesNotMatch(reclaimBlock, /app\.failed/, "回收不得碰 app.failed-*（排查证据）");
+  assert.doesNotMatch(reclaimBlock, /APP_DIR|\$DILEE_ROOT\/app"?/, "回收不得碰当前线上 app/");
+
+  // 闸门必须在解包之前拦下，否则半途 ENOSPC 会留下半成品候选目录。
+  const freeAt = build.indexOf("require_free_disk\n");
+  const extractAt = build.indexOf("tar -xzf");
+  assert.ok(freeAt > 0 && extractAt > 0 && freeAt < extractAt, "磁盘闸门必须早于解包");
+});
+
 test("健康探测带重试：冷启动不误判，失败信息含 build 与 release", () => {
   assert.match(common, /HEALTH_ATTEMPTS=/, "探测次数必须可配置");
   assert.match(common, /HEALTH_INTERVAL=/, "探测间隔必须可配置");

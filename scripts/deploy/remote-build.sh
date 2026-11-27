@@ -9,9 +9,38 @@
 source "$(dirname "$0")/common.sh"
 
 STAGING="${STAGING:-$DILEE_ROOT/app.release-$(date +%Y%m%d-%H%M%S)}"
+MIN_FREE_GB="${MIN_FREE_GB:-6}"
+
+# 每次构建解出一个约 2.7G 的候选目录，而切换只搬走最后一个。
+# 此前没有任何脚本清理它们，实测积了 3 个共 6.8G，把根分区推到 88% ——
+# 再落一次失败构建就可能写满。建新目录前先回收旧的（只动 app.release-*，
+# 不碰 app.backup-*（回滚目标）与 app.failed-*（排查证据））。
+reclaim_old_candidates() {
+  local stale
+  mapfile -t stale < <(ls -1d "$DILEE_ROOT"/app.release-* 2>/dev/null | sort)
+  [ "${#stale[@]}" -gt 0 ] || return 0
+  for old in "${stale[@]}"; do
+    [ "$old" = "$STAGING" ] && continue
+    log "回收旧候选目录：$old（$(du -sh "$old" 2>/dev/null | cut -f1)）"
+    rm -rf "$old" || log "  回收失败，继续（磁盘不足由下一步拦下）"
+  done
+}
+
+# 磁盘闸门：构建需要 archive 解包 + node_modules + 两个构建产物。
+# 实测一次成功构建峰值约 2.7G；留 6G 余量，宁可在切换前拒绝，也不要半路 ENOSPC
+# 留下一个半成品候选目录（那会让下一次构建也失败）。
+require_free_disk() {
+  local available_gb
+  available_gb="$(df -BG --output=avail "$DILEE_ROOT" 2>/dev/null | tail -1 | tr -dc '0-9')"
+  [ -n "$available_gb" ] || { log "读不到剩余空间，跳过闸门"; return 0; }
+  log "剩余空间：${available_gb}G（要求 >= ${MIN_FREE_GB}G）"
+  [ "$available_gb" -ge "$MIN_FREE_GB" ] || fail "剩余空间不足：${available_gb}G < ${MIN_FREE_GB}G。清理后再部署，或调低 MIN_FREE_GB"
+}
 
 log "候选目录：$STAGING"
 check_archive_layout "$ARCHIVE"
+require_free_disk
+reclaim_old_candidates
 rm -rf "$STAGING"
 mkdir -p "$STAGING"
 tar -xzf "$ARCHIVE" -C "$STAGING"

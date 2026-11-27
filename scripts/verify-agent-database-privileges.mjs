@@ -6,6 +6,11 @@ const BUSINESS_ZERO_WRITE = 'UPDATE "sales_orders" SET "updated_at" = "updated_a
 const STATE_READ = 'SELECT 1 AS "ok" FROM "agent_sessions" LIMIT 1';
 const STATE_ZERO_WRITE = 'UPDATE "agent_sessions" SET "updated_at" = "updated_at" WHERE FALSE';
 
+// 缺口候选两张表（迁移 20261125090000_agent_gap_candidates）。
+// 加进来之前这里是盲的：两张表建成后忘了给 agent_state 授权，写入被 catch 吞掉，
+// 线上候选永远 0 条而这份证明一路绿 —— 漏测而绿比测出红更危险。
+const GAP_TABLES = ["agent_gap_candidates", "agent_gap_reports"];
+
 function isPermissionDenied(error) {
   return /permission denied|insufficient privilege|not authorized/i.test(String(error));
 }
@@ -32,6 +37,14 @@ export async function verifyAgentDatabasePrivileges({ readClient, stateClient })
   await allow("read agent state", () => stateClient.$queryRawUnsafe(STATE_READ));
   await allow("write agent state", () => stateClient.$executeRawUnsafe(STATE_ZERO_WRITE));
   await deny("deny business read", () => stateClient.$queryRawUnsafe(BUSINESS_READ));
+
+  for (const table of GAP_TABLES) {
+    // 零行写探针：WHERE FALSE 不修改任何行，但数据库仍会校验 UPDATE 权限。
+    await allow(`read ${table}`, () => stateClient.$queryRawUnsafe(`SELECT 1 AS "ok" FROM "${table}" LIMIT 1`));
+    await allow(`write ${table}`, () => stateClient.$executeRawUnsafe(`UPDATE "${table}" SET "updated_at" = "updated_at" WHERE FALSE`));
+    // 只读账号不得看到缺口表：缺口是 Agent 状态，业务只读账号没有理由读它。
+    await deny(`deny ${table} to business read`, () => readClient.$queryRawUnsafe(`SELECT 1 AS "ok" FROM "${table}" LIMIT 1`));
+  }
   return passed;
 }
 
