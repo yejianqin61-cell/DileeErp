@@ -131,8 +131,10 @@ test("reports.orders_supports_single_sided_created_at_ranges", async () => {
   noWrites(upper.prisma);
 });
 
-test("reports.orders_page_size_is_clamped_into_1..200", async () => {
-  for (const [page_size, expected] of [[0, 1], [-100, 1], [1, 1], [20, 20], [200, 200], [201, 200], [5000, 200], [99999, 200], [undefined, 20], [null, 20], ["50", 50]]) {
+test("reports.orders_page_size_is_clamped_into_1..1000", async () => {
+  // 2026-11-27：列表上限从 200 提到 1000（用户报「最多只能显示 200 单」）。
+  // 夹取语义不变：下界 1、上界取真源 MAX_PAGE_SIZE，缺省 20。
+  for (const [page_size, expected] of [[0, 1], [-100, 1], [1, 1], [20, 20], [200, 200], [1000, 1000], [1001, 1000], [5000, 1000], [99999, 1000], [undefined, 20], [null, 20], ["50", 50]]) {
     const { prisma, reports } = service();
     await reports.orders({ page_size });
     assert.equal(readCall(prisma, "salesOrder").args.take, expected, `page_size=${String(page_size)} 应被收敛为 ${expected}`);
@@ -373,24 +375,25 @@ test("reports.export_overrides_caller_pagination_and_hits_the_take_cap", async (
 
   const args = readCall(prisma, "payrollLedger").args;
   assert.equal(args.skip, 0, "导出固定从第一页开始");
-  // KNOWN_DEFECT (reports.service.ts:16 + :20)：export 请求 page_size=5000，但 take() 把上限夹到 200，
-  // 于是 findMany 最多返回 200 行，第 16 行的 `>= 5000` 判断永远不成立（见下一个用例）。
-  assert.equal(args.take, 200, "调用方的 page_size 被忽略，实际 take 被夹到 200");
+  // 2026-11-27 修复：export 请求 page_size=5000，take() 必须用导出上限（5000）而不是列表上限（1000）。
+  // 修复前 take() 把上限夹到 200，findMany 最多返回 200 行，`>= 5000` 那条护栏永远不成立。
+  assert.equal(args.take, 5000, "导出应按导出上限取数，不受列表分页上限夹取");
   noWrites(prisma);
 });
 
-test("KNOWN_DEFECT: reports.export_silently_truncates_to_200_rows", async () => {
+test("reports.export_does_not_truncate_to_200_rows_anymore（2026-11-27 已修）", async () => {
   const { prisma, reports } = service();
   prisma.data.salesOrderRows = Array.from({ length: 200 }, (_, index) => ({ orderNo: `SO-${index}`, productName: "P", quantity: "1", unit: "件", status: "draft", deliveryDate: null, updatedAt: null }));
 
   const body = await reports.export("orders", {});
 
-  // KNOWN_DEFECT (reports.service.ts:16 与 :20)：take() 上限 200，而导出上限检测写成 `>= 5000`，
-  // 因此在真实（遵守 take 的）数据库上 EXPORT_LIMIT_EXCEEDED 永远不会触发，
-  // 超过 200 行的导出会被静默截断成 200 行，用户拿到不完整 CSV 且没有任何提示。
-  // 修复后（导出上限与 take 上限对齐，例如 take 上限放宽到 5000+）此断言应变红。
-  assert.equal(readCall(prisma, "salesOrder", "findMany").args.take, 200);
-  assert.equal(body.split("\r\n").filter((line) => line.length > 0).length, 201, "200 行数据 + 1 行表头，未报错也未提示截断");
+  // 这条用例原先叫 `KNOWN_DEFECT: reports.export_silently_truncates_to_200_rows`，
+  // 记录的是「导出被列表上限夹到 200 行，且不报错不提示」——用户拿到不完整的 CSV 却不知道。
+  // 2026-11-27 把导出上限（5000）与列表上限（1000）分开之后，这个缺陷已修：
+  //   · take 按 5000 取，不再被 200 夹住；
+  //   · 真到 5000 才报 EXPORT_LIMIT_EXCEEDED（见下一条用例）。
+  assert.equal(readCall(prisma, "salesOrder", "findMany").args.take, 5000, "导出取数上限应是 5000，不是 200");
+  assert.equal(body.split("\r\n").filter((line) => line.length > 0).length, 201, "200 行数据 + 1 行表头，全部导出");
   noWrites(prisma);
 });
 

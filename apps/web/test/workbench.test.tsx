@@ -128,9 +128,10 @@ type StubOptions = {
   detail?: (orderNo: string) => Response | Promise<Response>;
 };
 
-// 2026-11-22：工作台首屏从 page_size=200 降到 100（后端已改成批量取数，前端同时给「加载更多」）。
-const ORDERS_PATH = "/order-workbench/orders?page_size=100";
-const MEASUREMENTS_PATH = "/production-progress/measurements?page_size=200";
+// 2026-11-27：首屏回到 1000（全站口径统一）。2026-11-22 曾降到 100 是为了缓解后端 N+1，
+// 批量取数修好后不再需要；「加载更多」仍保留当兜底。
+const ORDERS_PATH = "/order-workbench/orders?page_size=1000";
+const MEASUREMENTS_PATH = "/production-progress/measurements?page_size=1000";
 // 首页任务提醒默认收起：挂载时只拉 summary，不拉完整列表（完整列表在点【展开】后才有）。
 const TASK_SUMMARY_PATH = "/task-reminders/summary";
 const EMPTY_TASK_COUNTS = { total: 0, urgent_count: 0, normal_count: 0, overdue_count: 0, due_soon_count: 0 };
@@ -636,7 +637,7 @@ it("首屏只取 100 张，总数超出时显示「加载更多」，点它才�
   // 首屏请求是 100（不是旧的 200）
   // 注意 callsTo 是按 endsWith 精确匹配的，这里 URL 带 page_size 后缀，所以直接过滤。
   const orderCalls = () => calls.filter((call) => call.url.includes("/order-workbench/orders?"));
-  expect(orderCalls().some((call) => call.url.includes("page_size=100"))).toBe(true);
+  expect(orderCalls().some((call) => call.url.includes("page_size=1000"))).toBe(true);
 
   // 明确告知「已加载 100 / 共 250」，否则用户会以为搜到的就是全部
   expect(screen.getByText(/已加载 100 张/)).toBeTruthy();
@@ -645,6 +646,6 @@ it("首屏只取 100 张，总数超出时显示「加载更多」，点它才�
   // 点「加载更多」后，请求放大到 200 —— 订单不会被隐藏
   await userEvent.click(screen.getByRole("button", { name: /加载更多/ }));
   await waitFor(() => {
-    expect(orderCalls().some((call) => call.url.includes("page_size=200"))).toBe(true);
+    expect(orderCalls().some((call) => call.url.includes("page_size=1000"))).toBe(true);
   });
 });

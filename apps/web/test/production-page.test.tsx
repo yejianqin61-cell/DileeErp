@@ -30,7 +30,7 @@ vi.mock("next/navigation", () => ({
 
 /** 页面 useEffect 里 Promise.all 的 6 个 GET（前缀是 api-client 拼的 /api/v1）。 */
 const EP = {
-  sales: "/api/v1/sales-orders?status=confirmed&page=1&page_size=200",
+  sales: "/api/v1/sales-orders?status=confirmed&page=1&page_size=1000",
   locations: "/api/v1/production/locations",
   operations: "/api/v1/production/operations",
   orders: "/api/v1/production/orders",
@@ -560,7 +560,7 @@ describe("生产单列表页：新建生产单的请求契约", () => {
     const searchCalls = calls.filter((call) => call.url.includes("search="));
     expect(searchCalls).toHaveLength(1);
     // 4 次 keystroke 只能落成 1 次请求，且带的是完整关键词（去掉 clearTimeout 会退化成逐键请求）
-    expect(searchCalls[0].url).toBe("/api/v1/sales-orders?status=confirmed&page=1&page_size=200&search=SO-9");
+    expect(searchCalls[0].url).toBe("/api/v1/sales-orders?status=confirmed&page=1&page_size=1000&search=SO-9");
   });
 });
 

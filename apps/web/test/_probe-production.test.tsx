@@ -13,7 +13,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const EP = {
-  sales: "/api/v1/sales-orders?status=confirmed&page=1&page_size=200",
+  sales: "/api/v1/sales-orders?status=confirmed&page=1&page_size=1000",
   locations: "/api/v1/production/locations",
   operations: "/api/v1/production/operations",
   orders: "/api/v1/production/orders",

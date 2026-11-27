@@ -484,7 +484,7 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
     setError("");
     try {
       const [customerList, unitList, currencyList, materialList] = await Promise.all([
-        apiGet<Customer[]>("/customers?page_size=200"),
+        apiGet<Customer[]>("/customers?page_size=1000"),
         apiGet<Unit[]>("/units"),
         fetchCurrencyOptions().catch(() => [] as CurrencyOption[]),
         // 物料清单：引用选择器与缩略图都要用。失败时降级成空清单（那一格仍然能填空，

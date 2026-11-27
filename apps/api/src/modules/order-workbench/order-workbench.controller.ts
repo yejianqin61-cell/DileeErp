@@ -4,9 +4,10 @@ import { Type } from "class-transformer";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
+import { MAX_PAGE_SIZE } from "../../platform/http/pagination-query.dto";
 import { OrderWorkbenchService } from "./order-workbench.service";
 
-class WorkbenchQueryDto { @IsOptional() @IsString() order_no?: string; @IsOptional() @IsString() customer_id?: string; @IsOptional() @IsString() status?: string; @IsOptional() @IsIn(["true", "false"]) has_blockers?: string; @IsOptional() @IsDateString() from?: string; @IsOptional() @IsDateString() to?: string; @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1; @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) page_size = 20; }
+class WorkbenchQueryDto { @IsOptional() @IsString() order_no?: string; @IsOptional() @IsString() customer_id?: string; @IsOptional() @IsString() status?: string; @IsOptional() @IsIn(["true", "false"]) has_blockers?: string; @IsOptional() @IsDateString() from?: string; @IsOptional() @IsDateString() to?: string; @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1; @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) page_size = 20; }
 
 @Controller("order-workbench")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)

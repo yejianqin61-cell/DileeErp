@@ -43,23 +43,23 @@ export default function WorkbenchPage() {
   const profile = useSessionProfile();
   const [orders, setOrders] = useState<WorkbenchOrder[]>([]); const [selectedOrder, setSelectedOrder] = useState<WorkbenchOrder | null>(null); const [measurements, setMeasurements] = useState<Measurement[]>([]); const [selectedOrderNo, setSelectedOrderNo] = useState(""); const [filter, setFilter] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   /**
-   * 工作台一次取多少单（2026-11-22）。
+   * 工作台一次取多少单（2026-11-22 定，2026-11-27 提额）。
    *
-   * 原来是写死 `page_size=200`：工作台没有分页控件，靠一次拉全量再在前端过滤。
-   * 但后端那时是「每单 22 个查询」的 N+1，200 单 = 4400 个查询打满连接池，
-   * 用户看到的就是「加载不出来」。后端的批量取数已经修好（整批只用 22 个查询），
-   * 这里再把首屏量降到 100：
-   *   · 首屏更快（响应体减半），也少占后端内存；
-   *   · **不隐藏任何订单** —— 超出时显示「加载更多」，点一下再取（见下方 total/loaded）；
-   *   · 前端关键字过滤作用于**已加载**的集合，所以提示里写清「已加载 N / 共 M」，
-   *     避免用户以为搜到的就是全部。
+   * 2026-11-22：从 200 降到 100。当时后端是「每单 22 个查询」的 N+1，200 单 = 4400 个查询
+   * 打满连接池；后端的批量取数修好之后（整批只用 22 个查询），这个降额就不再必要了。
+   *
+   * 2026-11-27：用户报「所有单据最多只能显示 200 单」，首屏回到 1000 与全站口径一致。
+   * 「加载更多」保留着当兜底（超过 1000 张时仍能继续取），但**首屏就得够用** ——
+   * 让人为了看第 201 张单先点一次按钮，本身就是那个 bug 的一部分。
+   * 前端关键字过滤作用于**已加载**的集合，所以提示里写清「已加载 N / 共 M」，
+   * 避免用户以为搜到的就是全部。
    */
-  const WORKBENCH_PAGE_SIZE = 100;
+  const WORKBENCH_PAGE_SIZE = 1000;
   const [loadedCount, setLoadedCount] = useState(WORKBENCH_PAGE_SIZE);
   const [totalCount, setTotalCount] = useState(0);
   async function load(limit = WORKBENCH_PAGE_SIZE) {
     setLoading(true); setError("");
-    try { const [workbench, measurementRows] = await Promise.all([apiGet<WorkbenchOrder[]>(`/order-workbench/orders?page_size=${limit}`), apiGet<Measurement[]>("/production-progress/measurements?page_size=200")]); setOrders(workbench.data); setMeasurements(measurementRows.data); setLoadedCount(limit); setTotalCount(Number(workbench.meta?.total ?? workbench.data.length)); if (selectedOrderNo && !workbench.data.some((order) => order.order_no === selectedOrderNo)) { setSelectedOrderNo(""); setSelectedOrder(null); } }
+    try { const [workbench, measurementRows] = await Promise.all([apiGet<WorkbenchOrder[]>(`/order-workbench/orders?page_size=${limit}`), apiGet<Measurement[]>("/production-progress/measurements?page_size=1000")]); setOrders(workbench.data); setMeasurements(measurementRows.data); setLoadedCount(limit); setTotalCount(Number(workbench.meta?.total ?? workbench.data.length)); if (selectedOrderNo && !workbench.data.some((order) => order.order_no === selectedOrderNo)) { setSelectedOrderNo(""); setSelectedOrder(null); } }
     catch (cause) { setError(messageOf(cause)); } finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);

@@ -244,12 +244,13 @@ test("alerts.list_paginates_and_reports_full_total", async () => {
   assert.equal(defaults.data.length, 3, "默认 page=1 / page_size=20");
 });
 
-test("alerts.list_caps_page_size_at_200", async () => {
-  const daily = Array.from({ length: 250 }, (_, index) => dailyRow(`d-${index}`));
+test("alerts.list_caps_page_size_at_1000", async () => {
+  // 2026-11-27：告警列表上限随全站口径从 200 提到 1000（用户报「最多只能显示 200 单」）。
+  const daily = Array.from({ length: 1200 }, (_, index) => dailyRow(`d-${index}`));
   const prisma = fakePrisma({ daily });
-  const result = await serviceWith(prisma).list({ page_size: 1000 });
-  assert.equal(result.total, 250);
-  assert.equal(result.data.length, 200, "单页最多 200 条");
+  const result = await serviceWith(prisma).list({ page_size: 5000 });
+  assert.equal(result.total, 1200);
+  assert.equal(result.data.length, 1000, "单页最多 1000 条");
 });
 
 test("alerts.list_page_size_boundaries_are_unvalidated", async () => {

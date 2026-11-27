@@ -3,7 +3,7 @@
 // 销售二级页：客户池（客户主数据 + 联系人）。
 //
 // 与改造前的关系：这段逻辑原来长在 `app/sales/page.tsx` 里（销售页顶部三张表之一），
-// 现在整段搬进独立页面 —— 行为一字未改（同一个 `/customers?page_size=200`、同一个 search 口径、
+// 现在整段搬进独立页面 —— 行为一字未改（同一个 `/customers?page_size=1000`、同一个 search 口径、
 // 同一套新建/编辑/停用/删除与联系人 CRUD），只是不再与销售单、成品总览挤在一页里。
 //
 // 两条界面约定：
@@ -49,7 +49,7 @@ export default function CustomerPool({ testId = "page-sales-customers" }: { test
     setLoading(true);
     setError("");
     try {
-      setCustomers((await apiGet<Customer[]>("/customers?page_size=200")).data);
+      setCustomers((await apiGet<Customer[]>("/customers?page_size=1000")).data);
     } catch (cause) {
       setError(messageOf(cause, "客户数据加载失败"));
     } finally {

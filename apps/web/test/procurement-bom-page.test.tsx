@@ -27,7 +27,7 @@ const bomWithOneItem = {
 
 function stubBomsPage() {
   return stubApi((url, call) => {
-    // 按**前缀**匹配：这一页取的是 `/sales-orders?status=confirmed&page=1&page_size=200`
+    // 按**前缀**匹配：这一页取的是 `/sales-orders?status=confirmed&page=1&page_size=1000`
     // （2026-10-13 修：原来取的是不带状态、默认 20 张的 `/sales-orders`，再在页面上过滤已确认 ——
     // 订单一多那一页就空了，连「新建BOM表」按钮都看不到）。
     if (url.startsWith(EP.salesOrders)) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
@@ -120,7 +120,7 @@ describe("采购 → BOM表：新建物料按钮真的能用", () => {
  * 更早的已确认单也永远轮不到。现在与生产页一致：服务端按已确认筛、一次 200 张。
  */
 describe("采购 → BOM表：已确认销售单列全（2026-10-13）", () => {
-  it("按 status=confirmed&page_size=200 取销售单，不再「最近 20 张里挑已确认的」", async () => {
+  it("按 status=confirmed&page_size=1000 取销售单，不再「最近 20 张里挑已确认的」", async () => {
     const calls = stubBomsPage();
     render(<><BomsPage /><Toaster /></>);
     await screen.findByTestId("page-procurement-boms");
@@ -129,7 +129,7 @@ describe("采购 → BOM表：已确认销售单列全（2026-10-13）", () => {
     const salesOrderCalls = calls.filter((call) => call.url.startsWith("/api/v1/sales-orders"));
     expect(salesOrderCalls).toHaveLength(1);
     expect(salesOrderCalls[0].url).toContain("status=confirmed");
-    expect(salesOrderCalls[0].url).toContain("page_size=200");
+    expect(salesOrderCalls[0].url).toContain("page_size=1000");
     // 服务端给的每一张单都有入口（不是被前端再筛一遍）
     expect(await screen.findByRole("button", { name: "编辑BOM表" })).toBeVisible();
   });

@@ -118,7 +118,7 @@ export default function ProductionPage() {
     setLoading(true); setError("");
     try {
       const [sales, sites, process, production, unitData, materialData] = await Promise.all([
-        apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=200"),
+        apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=1000"),
         apiGet<Location[]>("/production/locations"),
         apiGet<Operation[]>("/production/operations"),
         apiGet<ProductionOrder[]>("/production/orders"),
@@ -180,7 +180,7 @@ export default function ProductionPage() {
     if (orderSearchTimer.current) clearTimeout(orderSearchTimer.current);
     const requestId = ++orderSearchRequest.current;
     orderSearchTimer.current = setTimeout(() => {
-      void apiGet<Order[]>(`/sales-orders?status=confirmed&page=1&page_size=200&search=${encodeURIComponent(search)}`).then((result) => {
+      void apiGet<Order[]>(`/sales-orders?status=confirmed&page=1&page_size=1000&search=${encodeURIComponent(search)}`).then((result) => {
         if (requestId === orderSearchRequest.current) {
           ordersRef.current = result.data;
           setDialogCandidates(result.data);
@@ -193,7 +193,7 @@ export default function ProductionPage() {
   async function openProductionOrder() {
     let candidateOrders = orders;
     try {
-      const fresh = await apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=200");
+      const fresh = await apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=1000");
       candidateOrders = fresh.data;
       ordersRef.current = candidateOrders;
       // 打开对话框时重新拉到的「最新候选」也只交给对话框（缺陷 A）：页面主列表与 BOM 表用挂载时那份，

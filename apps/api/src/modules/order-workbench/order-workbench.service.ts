@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { MAX_PAGE_SIZE } from "../../platform/http/pagination-query.dto";
 import { decimalString, overallStatus, reconciliationBlockers, WORKBENCH_STATUS_LABELS, type WorkbenchBlocker } from "./order-workbench.domain";
 
 type Filter = { order_no?: string; customer_id?: string; status?: string; has_blockers?: string; from?: string; to?: string; page?: number; page_size?: number };
@@ -23,10 +24,13 @@ export const SUMMARY_QUERY_COUNT = 22;
 /**
  * 列表分页上限。
  *
- * 工作台前端一次要 200 条（它没有分页控件，靠一次拉全量再在前端按关键字过滤）。
- * 这里给一个硬上限，防止某个调用方写 `page_size=100000` 把数据库拖死。
+ * 工作台前端没有分页控件，靠一次拉一段再在前端按关键字过滤（首屏 100，可「加载更多」）。
+ * 上限统一到全局的 `MAX_PAGE_SIZE`（2026-11-27：200 → 1000），避免这里 500、控制器 200、
+ * 前端 200 三处各说各话 —— 那种漂移会让「前端能传、后端拒绝」变成 400。
+ *
+ * 这里转出一次是为了不破坏既有 import（测试与调用方一直从本文件拿 MAX_PAGE_SIZE）。
  */
-export const MAX_PAGE_SIZE = 500;
+export { MAX_PAGE_SIZE };
 
 @Injectable()
 export class OrderWorkbenchService {

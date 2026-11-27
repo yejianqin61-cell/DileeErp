@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { MAX_PAGE_SIZE as GLOBAL_MAX_PAGE_SIZE } from "../../platform/http/pagination-query.dto";
 import { FinanceReportQueryService } from "../finance/finance-report-query.service";
 import { itemNoKey } from "../sales/item-no";
 import { mergeArticles, qualifiedRate, sumByCurrency, unassignedOrderRow, documentRow, deliveryVerdict, deliverySummary, qualityTrend, DELIVERY_VERDICT_LABELS, DOCUMENT_GROUPS, TIMELINE_LIMIT, OPEN_PRODUCTION_STATUSES, SHIPPED_OUTBOUND_STATUSES, type ArticleOrderRow, type DeliveryVerdict, type DocumentRow, type DocumentType, type MergedArticle } from "./reorder.domain";
@@ -60,7 +61,8 @@ export type UnassignedFilter = { q?: string; customer_id?: string; include_close
 export type ArticleDetailFilter = { include_closed?: string; include_deleted?: string };
 
 const DEFAULT_PAGE_SIZE = 20;
-const MAX_PAGE_SIZE = 200;
+/** 上限统一到全局的 `MAX_PAGE_SIZE`（2026-11-27：200 → 1000），理由见 pagination-query.dto.ts。 */
+const MAX_PAGE_SIZE = GLOBAL_MAX_PAGE_SIZE;
 
 /** 下游事实（只对当前页/当前货号的订单号查一次，列表与详情共用）。 */
 type DownstreamSources = {

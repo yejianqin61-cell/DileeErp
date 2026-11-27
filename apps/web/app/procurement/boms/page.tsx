@@ -112,10 +112,11 @@ export default function BomsPage() {
   const [deleteDialog, setDeleteDialog] = useState<BomDeleteDialog | null>(null);
   /**
    * 搜索框（2026-11-11）。**客户端过滤**、不等服务端：这一页一次就把已确认销售单全取回来了
-   * （`page_size=200`，生产实况：未删销售单 55 张，其中已确认 54 张），逐字过滤才是用户要的即时感；
+   * （`page_size=1000`，2026-11-27 从 200 提到 1000），逐字过滤才是用户要的即时感；
    * 多打一个 `?search=` 请求还会在「输入一个字符」和「列表内容」之间引入竞态。
-   * 代价写在当天的设计文档里：超过 200 张已确认单时，第 201 张往后的单本来就取不回来 ——
+   * 代价：超过 1000 张已确认单时，第 1001 张往后的单取不回来 ——
    * 那是这一页**既有的**取数上限，不是搜索带来的，计数条已经把「加载了多少条」摆在用户眼前。
+   * 根治靠单据归档（已完毕的老单据移出活动列表），不是继续抬这个数。
    */
   const [query, setQuery] = useState("");
 
@@ -126,7 +127,7 @@ export default function BomsPage() {
       const [bs, so, ms, us] = await Promise.all([
         apiGet<Reference[]>("/boms"),
         /**
-         * 销售单：**服务端按「已确认」筛、一次取 200 张**（2026-10-13 修）。
+         * 销售单：**服务端按「已确认」筛、一次取 1000 张**（2026-10-13 修，2026-11-27 提额）。
          *
          * 用户原话：「采购模块，BOM表，没有新建 BOM 表的地方。只要有销售单事实的单子，就要允许
          * 也在采购中创建保存编辑 BOM 表。」
@@ -135,9 +136,9 @@ export default function BomsPage() {
          * 再在页面上按 `status === "confirmed"` 过滤 —— 订单一多、或者最近动过的单恰好都是草稿，
          * 这一页就**整页空**（"暂无已确认销售单"），于是连「新建BOM表」按钮都看不到，
          * 更早的已确认单也永远轮不到。生产页的 BOM 入口一直是
-         * `/sales-orders?status=confirmed&page=1&page_size=200`，两处现在一致。
+         * `/sales-orders?status=confirmed&page=1&page_size=1000`，两处现在一致。
          */
-        apiGet<Reference[]>("/sales-orders?status=confirmed&page=1&page_size=200"),
+        apiGet<Reference[]>("/sales-orders?status=confirmed&page=1&page_size=1000"),
         apiGet<Material[]>("/materials"),
         apiGet<Unit[]>("/units"),
       ]);

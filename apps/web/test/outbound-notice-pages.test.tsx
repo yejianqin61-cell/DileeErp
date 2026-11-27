@@ -134,8 +134,8 @@ function salesApi(routes: { summary?: (callIndex: number) => Response; notify?: 
       return routes.overview?.(overviewCalls) ?? apiOk(finishedGoodsOverview);
     }
     if (url.includes("/outbound-notices")) return routes.notify?.() ?? apiOk([]);
-    if (url.endsWith("/customers?page_size=200")) return apiOk([customer]);
-    if (url.endsWith("/sales-orders?page_size=200")) return apiOk([order]);
+    if (url.endsWith("/customers?page_size=1000")) return apiOk([customer]);
+    if (url.endsWith("/sales-orders?page_size=1000")) return apiOk([order]);
     if (url.endsWith("/units")) return apiOk(units);
     return apiErr(404, "NOT_FOUND", `未打桩的请求：${url}`);
   });
@@ -239,8 +239,8 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     expect(panel.queryByText("正在加载成品总览…")).toBeNull();
     // 拆页的收益就在这里：客户池与销售单的数据**根本没被这个页面请求**，
     // 所以总览接口挂掉时不可能连累它们（改造前三个板块挤一页，靠"各写各的错误态"来兜）。
-    expect(callsTo(calls, "/api/v1/customers?page_size=200")).toHaveLength(0);
-    expect(callsTo(calls, "/api/v1/sales-orders?page_size=200")).toHaveLength(0);
+    expect(callsTo(calls, "/api/v1/customers?page_size=1000")).toHaveLength(0);
+    expect(callsTo(calls, "/api/v1/sales-orders?page_size=1000")).toHaveLength(0);
 
     failing = false;
     await userEvent.click(panel.getByTestId("error-state-retry"));

@@ -5,6 +5,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
+import { MAX_PAGE_SIZE } from "../../platform/http/pagination-query.dto";
 import { ProductionProgressService } from "./production-progress.service";
 
 class ProgressQueryDto {
@@ -13,7 +14,7 @@ class ProgressQueryDto {
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) page_size = 20;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) page_size = 20;
 }
 
 @Controller("production-progress")

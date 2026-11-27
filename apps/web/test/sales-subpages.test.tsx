@@ -44,8 +44,8 @@ describe("销售二级页：每一页只拉自己那一个接口", () => {
 
     expect(screen.getByTestId("page-sales-finished-goods")).toBeVisible();
     await waitFor(() => expect(callsTo(calls, "/sales-orders/finished-goods-summary")).toHaveLength(1));
-    expect(callsTo(calls, "/customers?page_size=200")).toHaveLength(0);
-    expect(callsTo(calls, "/sales-orders?page_size=200")).toHaveLength(0);
+    expect(callsTo(calls, "/customers?page_size=1000")).toHaveLength(0);
+    expect(callsTo(calls, "/sales-orders?page_size=1000")).toHaveLength(0);
   });
 
   it("客户池页：只拉客户（币种字典是静态配置，不算业务数据）", async () => {
@@ -53,8 +53,8 @@ describe("销售二级页：每一页只拉自己那一个接口", () => {
     render(<CustomerPool />);
 
     expect(screen.getByTestId("page-sales-customers")).toBeVisible();
-    await waitFor(() => expect(callsTo(calls, "/customers?page_size=200")).toHaveLength(1));
-    expect(callsTo(calls, "/sales-orders?page_size=200")).toHaveLength(0);
+    await waitFor(() => expect(callsTo(calls, "/customers?page_size=1000")).toHaveLength(1));
+    expect(callsTo(calls, "/sales-orders?page_size=1000")).toHaveLength(0);
   });
 
   it("销售单页：只拉销售单", async () => {
@@ -62,8 +62,8 @@ describe("销售二级页：每一页只拉自己那一个接口", () => {
     render(<SalesOrdersList />);
 
     expect(screen.getByTestId("page-sales-orders")).toBeVisible();
-    await waitFor(() => expect(callsTo(calls, "/sales-orders?page_size=200")).toHaveLength(1));
-    expect(callsTo(calls, "/customers?page_size=200")).toHaveLength(0);
+    await waitFor(() => expect(callsTo(calls, "/sales-orders?page_size=1000")).toHaveLength(1));
+    expect(callsTo(calls, "/customers?page_size=1000")).toHaveLength(0);
     expect(callsTo(calls, "/sales-orders/finished-goods-summary")).toHaveLength(0);
   });
 

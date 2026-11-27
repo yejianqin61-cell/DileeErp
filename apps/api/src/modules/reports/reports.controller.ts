@@ -5,10 +5,11 @@ import type { Response } from "express";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
+import { MAX_PAGE_SIZE } from "../../platform/http/pagination-query.dto";
 import { ReportsService } from "./reports.service";
 import { ProcurementWarehouseReportService } from "./procurement-warehouse-report.service";
 import { ProcurementWarehouseReportExportService } from "./procurement-warehouse-report-export.service";
-class ReportQueryDto { @IsOptional() @IsString() order_no?: string; @IsOptional() @IsDateString() from?: string; @IsOptional() @IsDateString() to?: string; @IsOptional() @IsString() status?: string; @IsOptional() @IsString() employee_id?: string; @IsOptional() @IsString() supplier_id?: string; @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1; @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) page_size = 20; }
+class ReportQueryDto { @IsOptional() @IsString() order_no?: string; @IsOptional() @IsDateString() from?: string; @IsOptional() @IsDateString() to?: string; @IsOptional() @IsString() status?: string; @IsOptional() @IsString() employee_id?: string; @IsOptional() @IsString() supplier_id?: string; @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1; @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) page_size = 20; }
 
 /**
  * 采购与仓储报表的筛选 DTO（设计文档 §2/§3）：两个参数都可选、都是模糊匹配。

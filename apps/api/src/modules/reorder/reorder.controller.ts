@@ -5,6 +5,7 @@ import { Type } from "class-transformer";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
+import { MAX_PAGE_SIZE } from "../../platform/http/pagination-query.dto";
 import { ReorderExportService } from "./reorder-export.service";
 import { ReorderService } from "./reorder.service";
 
@@ -22,7 +23,7 @@ class ArticleQueryDto {
   /** 默认 `false`：软删订单默认排除。 */
   @IsOptional() @IsIn(["true", "false"]) include_deleted?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) page_size = 20;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) page_size = 20;
 }
 
 class UnassignedQueryDto {
@@ -31,7 +32,7 @@ class UnassignedQueryDto {
   @IsOptional() @IsIn(["true", "false"]) include_closed?: string;
   @IsOptional() @IsIn(["true", "false"]) include_deleted?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) page_size = 20;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(MAX_PAGE_SIZE) page_size = 20;
 }
 
 class ArticleDetailQueryDto {

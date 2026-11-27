@@ -38,7 +38,7 @@ export const SALES_ORDER_SORT_OPTIONS: ReadonlyArray<{ value: SalesOrderSortValu
  * 把选项值折成查询参数。
  *
  * **默认值不传**：`order_no:asc` 是服务端的默认行为，传与不传结果一样；
- * 不传还能让"默认列表"的 URL 保持精简（与改造前一样只有 `page_size=200`）。
+ * 不传还能让"默认列表"的 URL 保持精简（只有 `page_size` 那一段）。
  * 其余选项照实发出去，服务端按 `sort` / `direction` 排序。
  */
 export function salesOrderSortParams(value: SalesOrderSortValue): { sort?: string; direction?: string } {
@@ -48,9 +48,25 @@ export function salesOrderSortParams(value: SalesOrderSortValue): { sort?: strin
   return { sort, direction };
 }
 
-/** 把 `{sort, direction}` 拼进已有的查询串（`page_size=200` 那一段）。 */
+/**
+ * 销售单列表一次取多少张（2026-11-27：200 → 1000）。
+ *
+ * 用户原话：「所有单据前端最多只能显示 200 单，再多就展示不了了。这个先扩充到 1000 单。
+ * 以后我们要优化单据完毕归档机制。」
+ *
+ * 为什么是前端常量而不是"翻页"：这个列表没有分页控件（`salesOrderListPath` 只带
+ * `page_size`，不带 `page`），一次拉多少就显示多少 —— 所以 200 这个数直接等于
+ * 「第 201 张单永远看不见」。后端 `MAX_PAGE_SIZE` 同步改成 1000，两边必须一致，
+ * 否则前端传 1000 会被后端 400。
+ *
+ * 1000 是**止血**，不是终局：真正该做的是单据归档（已完毕的老单据移出活动列表），
+ * 那才是让「单量继续涨也不变慢」的办法。这个常量就是那件事的临时边界。
+ */
+export const SALES_ORDER_LIST_PAGE_SIZE = 1000;
+
+/** 把 `{sort, direction}` 拼进已有的查询串（`page_size` 那一段）。 */
 export function salesOrderListPath(value: SalesOrderSortValue): string {
-  const params = new URLSearchParams({ page_size: "200" });
+  const params = new URLSearchParams({ page_size: String(SALES_ORDER_LIST_PAGE_SIZE) });
   const extra = salesOrderSortParams(value);
   if (extra.sort) params.set("sort", extra.sort);
   if (extra.direction) params.set("direction", extra.direction);

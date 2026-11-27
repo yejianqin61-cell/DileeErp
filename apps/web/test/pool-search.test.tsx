@@ -18,8 +18,8 @@ const EP = {
   suppliers: "/api/v1/suppliers",
   materials: "/api/v1/materials",
   units: "/api/v1/units",
-  customers: "/api/v1/customers?page_size=200",
-  salesOrders: "/api/v1/sales-orders?page_size=200",
+  customers: "/api/v1/customers?page_size=1000",
+  salesOrders: "/api/v1/sales-orders?page_size=1000",
   currencies: "/api/v1/dictionaries/currency/items",
 } as const;
 
