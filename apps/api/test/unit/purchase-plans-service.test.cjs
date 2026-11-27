@@ -761,6 +761,22 @@ test("保存：已下单的行被改内容 → 422，并说清是哪个字段（
   }
 });
 
+test("保存：已下单行的型号库里是空串、前端省略回传时不算改动（T-0034 DL260215）", async () => {
+  // 现场：DL260215 的计划 PP-20261102-86CAB4F0 第 5 行（吊牌）已下单，库里 model 是 `""`；
+  // 前端 `itemsPayload()` 用 `row.model || undefined` 回传，空串被省略。改前服务端拿
+  // `"" !== null` 误判成「改了型号」，整份计划每次保存都 422，用户看到的就是「已完成修改，但是无法保存」。
+  // 空串 / null / undefined 都是「没有型号」，不能算改动；真改成 X-1 仍由上一个用例拦。
+  const items = seededItems();
+  items[0].model = "";
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  const updated = await service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0]), lineOf(items[1], { unit_price: "1.9500" })] }, user);
+
+  assert.equal(updated.orderedCount, 1, "已下单的行原样留下");
+  assert.equal(items[0].quantity.toString(), "5", "保存没有被误判成改动已下单行");
+  assert.equal(planItems.filter((row) => row.deletedAt === null).length, 2, "整份计划正常保存，没有 422");
+});
+
 test("保存：已下单行的**预计到货**可以改，并且同步进采购明细（「预期」不是「既成事实」）", async () => {
   // 口径 7 把采购单页的明细编辑关掉之后，如果这里也锁死，系统里就**再没有任何地方**能改这个日期。
   // 而供应商说"这周到不了、下周到"是每天都发生的事。同步是为了不让同一行有两个预计到货。
