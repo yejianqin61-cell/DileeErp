@@ -38,7 +38,13 @@ export function parseSearchDocumentsInput(raw: unknown): DocumentSearchInput {
 type Row = Record<string, unknown> & { sales_order_no: string; related_documents: { document_type: string; document_no: string }[] };
 
 export async function searchDocuments(client: DocumentSearchStore, input: DocumentSearchInput): Promise<Record<string, unknown>[]> {
-  const take = SEARCH_DOCUMENTS_MAX_ROWS;
+  return (await searchDocumentsPage(client, input)).rows;
+}
+
+/** 同上，另带「是否还有没给出的单据」：任一类单据超过上限、或归并后超过上限。 */
+export async function searchDocumentsPage(client: DocumentSearchStore, input: DocumentSearchInput): Promise<{ rows: Record<string, unknown>[]; hasMore: boolean }> {
+  // 多取一行，用来分辨「正好 20 张」和「不止 20 张」。
+  const take = SEARCH_DOCUMENTS_MAX_ROWS + 1;
   const contains = input.q;
   const [sales, purchases, productions] = await Promise.all([
     client.salesOrder.findMany({
@@ -73,6 +79,7 @@ export async function searchDocuments(client: DocumentSearchStore, input: Docume
     rows.push(row);
   };
 
+  const capped = [sales, purchases, productions].some((found) => found.length > SEARCH_DOCUMENTS_MAX_ROWS);
   for (const row of sales) {
     add({
       document_type: "sales_order",
@@ -110,5 +117,5 @@ export async function searchDocuments(client: DocumentSearchStore, input: Docume
       related_documents: [],
     });
   }
-  return rows.slice(0, SEARCH_DOCUMENTS_MAX_ROWS);
+  return { rows: rows.slice(0, SEARCH_DOCUMENTS_MAX_ROWS), hasMore: capped || rows.length > SEARCH_DOCUMENTS_MAX_ROWS };
 }

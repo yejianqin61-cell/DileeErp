@@ -4,7 +4,8 @@ import type { PrismaClient } from "@prisma/client";
 
 export const UNROOTED_MAX_ROWS = 20;
 
-export type UnrootedFact = { data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] };
+/** `total` 是翻页前的总行数：两个实现都先取全量再切页，所以现成可给。 */
+export type UnrootedFact = { data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[]; total: number };
 
 export type UnrootedHandler = {
   parse: (raw: unknown) => { page: number; limitDays?: number };
@@ -72,7 +73,7 @@ export async function listLowStockMaterials(client: Pick<PrismaClient, "inventor
     net_quantity: row.net.toString(),
     basis: "净库存量（inventory_facts 的 quantity_delta 汇总，raw_material + scrap）。系统未维护安全库存，因此本口径只表示「净额不大于 0」。",
   }));
-  return { data, sources: data.map((row) => ({ business_type: "material", business_no: row.material_code })) };
+  return { data, sources: data.map((row) => ({ business_type: "material", business_no: row.material_code })), total: short.length };
 }
 
 export async function listOverdueArrivals(client: Pick<PrismaClient, "purchaseOrder">, input: { page: number }, now: Date): Promise<UnrootedFact> {
@@ -98,7 +99,7 @@ export async function listOverdueArrivals(client: Pick<PrismaClient, "purchaseOr
   });
   const skip = (input.page - 1) * UNROOTED_MAX_ROWS;
   const data = rows.slice(skip, skip + UNROOTED_MAX_ROWS);
-  return { data, sources: data.map((row) => ({ business_type: "purchase_order", business_no: row.purchase_order_no })) };
+  return { data, sources: data.map((row) => ({ business_type: "purchase_order", business_no: row.purchase_order_no })), total: rows.length };
 }
 
 export const UNROOTED_OPERATIONS: Record<string, UnrootedHandler> = {

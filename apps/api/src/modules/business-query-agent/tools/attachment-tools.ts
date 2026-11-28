@@ -47,7 +47,8 @@ export async function getOrderAttachments(client: AttachmentStore, root: AgentOr
   const links = await client.attachmentLink.findMany({
     where: { OR: families.map((family) => ({ entityType: family.entityType, entityId: { in: family.entityIds } })) },
     orderBy: { createdAt: "desc" },
-    take: 20,
+    // 多取一行：本查询不分页，靠它让执行器看出「不止 20 条」。
+    take: 21,
     select: { id: true, entityType: true, entityId: true, attachment: { select: { mimeType: true, fileSize: true, createdAt: true } } },
   });
   const data = links.map((link) => ({
@@ -57,5 +58,5 @@ export async function getOrderAttachments(client: AttachmentStore, root: AgentOr
     size: link.attachment.fileSize.toString(),
     uploaded_at: link.attachment.createdAt,
   }));
-  return { data, sources: data.map((row) => ({ business_type: "attachment", business_no: `${row.entity_type}:${row.entity_id}` })) };
+  return { data, sources: data.slice(0, 20).map((row) => ({ business_type: "attachment", business_no: `${row.entity_type}:${row.entity_id}` })) };
 }

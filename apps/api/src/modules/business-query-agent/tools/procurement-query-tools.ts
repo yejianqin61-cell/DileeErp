@@ -15,7 +15,7 @@ export type ProcurementQueryStore = Pick<PrismaClient, "purchasePlan" | "purchas
 type Snapshot = unknown;
 const snapName = (snapshot: Snapshot): string | null => (snapshot && typeof snapshot === "object" && typeof (snapshot as { name?: unknown }).name === "string" ? (snapshot as { name: string }).name : null);
 
-export async function getPurchasePlans(client: ProcurementQueryStore, root: AgentOrderRoot, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+export async function getPurchasePlans(client: ProcurementQueryStore, root: AgentOrderRoot, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[]; total?: number }> {
   const orderNo = root.orderNo;
   const plans = await client.purchasePlan.findMany({
     where: { orderNo, deletedAt: null },
@@ -36,6 +36,7 @@ export async function getPurchasePlans(client: ProcurementQueryStore, root: Agen
   return {
     data: data.slice(skip, skip + take),
     sources: plans.map((plan) => ({ business_type: "purchase_plan", business_no: plan.planNo })),
+    total: data.length,
   };
 }
 

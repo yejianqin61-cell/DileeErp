@@ -113,7 +113,7 @@ export async function getSupplierPayments(client: FinanceQueryStore, root: Agent
   };
 }
 
-export async function getReconciliations(client: FinanceQueryStore, root: AgentOrderRoot, currentPage: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+export async function getReconciliations(client: FinanceQueryStore, root: AgentOrderRoot, currentPage: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[]; total?: number }> {
   const [receivables, payables] = await Promise.all([
     client.receivableReconciliation.findMany({
       where: { orderNo: root.orderNo, deletedAt: null }, orderBy: { createdAt: "desc" },
@@ -132,7 +132,7 @@ export async function getReconciliations(client: FinanceQueryStore, root: AgentO
       },
     }),
   ]);
-  const rows = [
+  const all = [
     ...receivables.map((row) => ({ createdAt: row.createdAt, source: { business_type: "receivable_reconciliation", business_no: row.reconciliationNo }, data: {
       direction: "receivable", reconciliation_no: row.reconciliationNo, period_start: row.periodStart, period_end: row.periodEnd,
       receivable_amount: row.receivableAmountSnapshot.toString(), payment_amount: row.paymentAmountSnapshot.toString(), adjustment_amount: row.adjustmentAmountSnapshot.toString(),
@@ -145,8 +145,9 @@ export async function getReconciliations(client: FinanceQueryStore, root: AgentO
       system_balance: row.systemBalance.toString(), external_balance: row.externalBalance.toString(), difference: row.difference.toString(), currency: row.currency, status: row.status,
       supplier_code: row.supplier.supplierCode, supplier_name: row.supplier.name, purchase_order_no: row.purchaseOrder?.purchaseOrderNo ?? null, bank_name: row.bank?.bankName ?? null,
     } })),
-  ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()).slice((currentPage - 1) * 20, currentPage * 20);
-  return { data: rows.map((row) => row.data), sources: rows.map((row) => row.source) };
+  ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+  const rows = all.slice((currentPage - 1) * 20, currentPage * 20);
+  return { data: rows.map((row) => row.data), sources: rows.map((row) => row.source), total: all.length };
 }
 
 /**
