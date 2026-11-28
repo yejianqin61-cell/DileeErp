@@ -16,22 +16,24 @@ import { getCustomerPayments, getOrderCostProfit, getOrderPayroll, getPayables, 
  * 新领域任务（P3-T2..T5）往这张表注册；财务 7 个 op 不进这张表（阶段 4）。
  */
 
-export type RootedFact = { data: unknown; sources?: { business_type: string; business_no: string }[] };
+export type RootedFact = { data: unknown; sources?: { business_type: string; business_no: string }[]; total?: number };
 
 export type RootedHandler = {
   parse: (raw: unknown) => OrderRootInput;
   run: (client: PrismaClient, root: AgentOrderRoot, input: OrderRootInput) => Promise<RootedFact>;
+  /** false = 不接受 page，执行器不能靠「再取下一页」判断结果是否完整。 */
+  paged?: false;
 };
 
 export const ROOTED_OPERATIONS: Record<string, RootedHandler> = {
-  get_order_overview: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getOrderOverview(client, root) },
-  get_order_status: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getOrderStatus(client, root) },
+  get_order_overview: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getOrderOverview(client, root) },
+  get_order_status: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getOrderStatus(client, root) },
   get_order_timeline: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getOrderTimeline(client, root, input.page ?? 1) },
   get_order_alerts: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getOrderAlerts(client, root, input.page ?? 1) },
-  get_order_attachments: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getOrderAttachments(client, root) },
+  get_order_attachments: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getOrderAttachments(client, root) },
   // P3-T2 销售领域
-  get_sales_order: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getSalesOrder(client, root) },
-  get_customer: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getCustomer(client, root) },
+  get_sales_order: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getSalesOrder(client, root) },
+  get_customer: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getCustomer(client, root) },
   get_bom: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getBom(client, root, input.page ?? 1) },
   get_sales_returns: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getSalesReturns(client, root, input.page ?? 1) },
   // P3-T3 采购领域
@@ -40,12 +42,12 @@ export const ROOTED_OPERATIONS: Record<string, RootedHandler> = {
   get_receipts: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getReceipts(client, root, input.page ?? 1) },
   get_incoming_inspections: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getIncomingInspections(client, root, input.page ?? 1) },
   // P3-T4 生产领域
-  get_production_orders: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getProductionOrders(client, root) },
-  get_operation_progress: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getOperationProgress(client, root) },
+  get_production_orders: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getProductionOrders(client, root) },
+  get_operation_progress: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getOperationProgress(client, root) },
   get_operation_reports: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getOperationReports(client, root, input.page ?? 1) },
-  get_outsource_flow: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getOutsourceFlow(client, root) },
+  get_outsource_flow: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getOutsourceFlow(client, root) },
   // P3-T5 仓库领域
-  get_raw_material_balance: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getRawMaterialBalance(client, root) },
+  get_raw_material_balance: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), paged: false, run: (client, root) => getRawMaterialBalance(client, root) },
   get_inventory_facts: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getInventoryFacts(client, root, input.page ?? 1) },
   get_material_movements: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getMaterialMovements(client, root, input.page ?? 1) },
   get_finished_goods_qc: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getFinishedGoodsQc(client, root, input.page ?? 1) },

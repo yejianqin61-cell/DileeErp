@@ -16,5 +16,9 @@ export type QueryFact = {
   /** 数组=行集（可分页截断），对象=单据级 DTO（overview/status）。两者都是显式投影，不是 Prisma 原对象。 */
   data: Record<string, unknown> | Record<string, unknown>[];
   sources: QuerySource[];
+  /** 仅数组结果带：本次返回之外还有行没给出（超过行数/字节上限，或下一页还有）。 */
+  has_more?: boolean;
+  /** 符合条件的总行数；只在实现手里本来就有全量时给，不为它另做计数查询。 */
+  total_count?: number;
   access_level: AgentAccessLevel;
 };

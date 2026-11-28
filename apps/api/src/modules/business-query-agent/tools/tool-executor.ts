@@ -2,7 +2,7 @@ import { ForbiddenException, UnprocessableEntityException } from "@nestjs/common
 import { lowerAccessLevel, resolveAccessLevel, type AgentAccessLevel } from "../access-level";
 import type { AgentPrincipal, AgentRoleReader } from "../query-permission.guard";
 import { parseSearchOrdersInput, searchOrders, type AgentReadStore } from "./order-query-tools";
-import { parseSearchDocumentsInput, searchDocuments } from "./document-search-tools";
+import { parseSearchDocumentsInput, searchDocumentsPage } from "./document-search-tools";
 import { listDocuments, parseListDocumentsInput } from "./list-documents-tools";
 import { UNROOTED_OPERATIONS } from "./unrooted-operations";
 import type { QueryFact, QuerySource } from "./query-fact";
@@ -56,7 +56,8 @@ export class ToolExecutor {
       const input = parseSearchOrdersInput(call.args);
       const rows = await searchOrders(this.prisma, input);
       signal?.throwIfAborted();
-      const data = this.truncateData(rows, capability.maxRows) as Record<string, unknown>[];
+      const { data, ...completeness } = await this.bounded(rows, capability.maxRows, { nextPage: () => searchOrders(this.prisma, { ...input, page: input.page + 1 }) });
+      signal?.throwIfAborted();
       return {
         fact: {
           operation: capability.operation,
@@ -64,6 +65,7 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
+          ...completeness,
           access_level: effective,
         },
       };
@@ -72,9 +74,9 @@ export class ToolExecutor {
     // 按号检索任意单据（R-1）：销售单号、采购单号、生产单号都能进，每行落回所属销售单号。
     if (capability.operation === "search_documents") {
       const input = parseSearchDocumentsInput(call.args);
-      const rows = await searchDocuments(this.prisma, input);
+      const found = await searchDocumentsPage(this.prisma, input);
       signal?.throwIfAborted();
-      const data = this.truncateData(rows, capability.maxRows) as Record<string, unknown>[];
+      const { data, ...completeness } = await this.bounded(found.rows, capability.maxRows, { hasMore: found.hasMore });
       return {
         fact: {
           operation: capability.operation,
@@ -82,6 +84,7 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: data.map((row) => ({ business_type: String(row.document_type), business_no: String(row.document_no), queried_at: asOf })),
+          ...completeness,
           access_level: effective,
         },
       };
@@ -91,7 +94,8 @@ export class ToolExecutor {
       const input = parseListDocumentsInput(call.args);
       const rows = await listDocuments(this.prisma, input);
       signal?.throwIfAborted();
-      const data = this.truncateData(rows, capability.maxRows) as Record<string, unknown>[];
+      const { data, ...completeness } = await this.bounded(rows, capability.maxRows, { nextPage: () => listDocuments(this.prisma, { ...input, page: input.page + 1 }) });
+      signal?.throwIfAborted();
       return {
         fact: {
           operation: capability.operation,
@@ -99,6 +103,7 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
+          ...completeness,
           access_level: effective,
         },
       };
@@ -110,7 +115,7 @@ export class ToolExecutor {
       const input = unrooted.parse(call.args);
       const result = await unrooted.run(this.prisma, input, new Date());
       signal?.throwIfAborted();
-      const data = this.truncateData(result.data, capability.maxRows) as Record<string, unknown>[];
+      const { data, ...completeness } = await this.bounded(result.data, capability.maxRows, { total: result.total, page: input.page });
       return {
         fact: {
           operation: capability.operation,
@@ -118,6 +123,7 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: result.sources.map((source) => ({ ...source, queried_at: asOf })),
+          ...completeness,
           access_level: effective,
         },
       };
@@ -134,24 +140,42 @@ export class ToolExecutor {
     signal?.throwIfAborted();
     const result = await handler.run(this.prisma, root, input);
     signal?.throwIfAborted();
+    const page = input.page ?? 1;
+    const bounded = Array.isArray(result.data)
+      ? await this.bounded(result.data, capability.maxRows, {
+          total: result.total,
+          page,
+          nextPage: handler.paged === false ? undefined : async () => (await handler.run(this.prisma, root, { ...input, page: page + 1 })).data as unknown[],
+        })
+      : { data: result.data as Record<string, unknown> };
+    signal?.throwIfAborted();
     const sources: QuerySource[] = (result.sources ?? [{ business_type: "sales_order", business_no: root.orderNo }]).map((source) => ({ ...source, queried_at: asOf }));
     return {
       fact: {
         operation: capability.operation,
         order_no: root.orderNo,
         as_of: asOf,
-        data: this.truncateData(result.data, capability.maxRows) as Record<string, unknown> | Record<string, unknown>[],
+        ...bounded,
         sources,
         access_level: effective,
       },
     };
   }
 
-  /** 行数与字节双重截断：数组按能力登记的 maxRows 截行，字节超限逐行丢弃；单对象 DTO 构造上即有界。 */
-  private truncateData(data: unknown, maxRows: number): unknown {
-    if (!Array.isArray(data)) return data;
-    let rows = data.slice(0, maxRows);
-    while (rows.length > 0 && Buffer.byteLength(JSON.stringify(rows), "utf8") > MAX_RESULT_BYTES) rows = rows.slice(0, -1);
-    return rows;
+  /**
+   * 行数与字节双重截断，并说清结果是否完整：数组按能力登记的 maxRows 截行，字节超限逐行丢弃。
+   * 判断顺序：本次就切掉了行 → 实现给了总数就按页算 → 满页的分页查询再取一次下一页。
+   */
+  private async bounded(
+    rows: unknown[],
+    maxRows: number,
+    more: { hasMore?: boolean; total?: number; page?: number; nextPage?: () => Promise<unknown[]> } = {},
+  ): Promise<{ data: Record<string, unknown>[]; has_more: boolean; total_count?: number }> {
+    let data = rows.slice(0, maxRows) as Record<string, unknown>[];
+    while (data.length > 0 && Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_RESULT_BYTES) data = data.slice(0, -1);
+    let hasMore = data.length < rows.length || more.hasMore === true;
+    if (!hasMore && more.total !== undefined) hasMore = ((more.page ?? 1) - 1) * maxRows + data.length < more.total;
+    else if (!hasMore && more.nextPage && rows.length >= maxRows) hasMore = (await more.nextPage()).length > 0;
+    return { data, has_more: hasMore, ...(more.total !== undefined ? { total_count: more.total } : {}) };
   }
 }

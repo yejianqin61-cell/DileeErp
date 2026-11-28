@@ -103,7 +103,7 @@ export async function getOrderTimeline(client: TimelineStore, root: { orderNo: s
 export type OrderAlertsStore = Pick<PrismaClient, "productionDailyAlert" | "finishedGoodsQcRecord" | "inventoryFact" | "alertHandling">;
 
 /** 三源告警按订单下推（AlertsService.list() 是全库聚合，不能直接复用；去重/分级复用其领域纯函数）。 */
-export async function getOrderAlerts(client: OrderAlertsStore, root: { orderNo: string }, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+export async function getOrderAlerts(client: OrderAlertsStore, root: { orderNo: string }, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[]; total?: number }> {
   const orderNo = root.orderNo;
   const [daily, qcRejected, inventoryGroups] = await Promise.all([
     client.productionDailyAlert.findMany({ where: { deletedAt: null, status: { in: ["pending", "confirmed"] }, orderNo }, select: { id: true, alertType: true, orderNo: true, createdAt: true } }),
@@ -120,7 +120,8 @@ export async function getOrderAlerts(client: OrderAlertsStore, root: { orderNo: 
   const handlings = rows.length ? await client.alertHandling.findMany({ where: { OR: rows.map((row) => ({ sourceType: row.source_type, sourceId: row.source_id, alertType: row.alert_type })) }, select: { sourceType: true, sourceId: true, alertType: true, status: true } }) : [];
   const handled = new Map(handlings.map((row) => [`${row.sourceType}:${row.sourceId}:${row.alertType}`, row.status]));
   const { skip, take } = orderPage({ orderNo, page }, 20);
-  const merged = deduplicateAlerts(rows).slice(skip, skip + take);
+  const deduplicated = deduplicateAlerts(rows);
+  const merged = deduplicated.slice(skip, skip + take);
   const data = merged.map((row) => ({ source_type: row.source_type, alert_type: row.alert_type, severity: row.severity, title: row.title, suggestion: row.suggestion, status: handled.get(`${row.source_type}:${row.source_id}:${row.alert_type}`) ?? row.status, created_at: row.created_at }));
-  return { data, sources: merged.map((row) => ({ business_type: row.source_type, business_no: row.source_id })) };
+  return { data, sources: merged.map((row) => ({ business_type: row.source_type, business_no: row.source_id })), total: deduplicated.length };
 }

@@ -95,26 +95,29 @@ export async function getOperationReports(client: ProductionQueryStore, root: Ag
   };
 }
 
+/** 每条链多取一行：本查询不分页，靠它让执行器看出「不止 20 行」。 */
+const OUTSOURCE_CHAIN_TAKE = 21;
+
 export async function getOutsourceFlow(client: ProductionQueryStore, root: AgentOrderRoot): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
   const orderNo = root.orderNo;
   const [batches, returns, shipments] = await Promise.all([
     client.outsourceLogisticsBatch.findMany({
       where: { orderNo, deletedAt: null },
       orderBy: { createdAt: "desc" },
-      take: 20,
+      take: OUTSOURCE_CHAIN_TAKE,
       // 发料证明备注/备注/采购关联不选（采购价与应付在外加工的关联链上）。
       select: { batchNo: true, status: true, plannedQuantity: true, dispatchedQuantity: true, dispatchDate: true },
     }),
     client.outsourceReturnTransfer.findMany({
       where: { orderNo, deletedAt: null },
       orderBy: { transferDate: "desc" },
-      take: 20,
+      take: OUTSOURCE_CHAIN_TAKE,
       select: { transferNo: true, transferType: true, quantity: true, transferDate: true, status: true, finishedGoodsQcStatus: true },
     }),
     client.outsourceDirectShipment.findMany({
       where: { orderNo, deletedAt: null },
       orderBy: { shipmentDate: "desc" },
-      take: 20,
+      take: OUTSOURCE_CHAIN_TAKE,
       select: { shipmentNo: true, quantity: true, shipmentDate: true, logisticsReference: true, status: true, reversalQuantity: true },
     }),
   ]);

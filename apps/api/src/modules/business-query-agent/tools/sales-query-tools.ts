@@ -49,11 +49,11 @@ export async function getCustomer(client: SalesQueryStore, root: AgentOrderRoot)
   return { data, sources: [{ business_type: "customer", business_no: data.customer_code ?? String(order.customerId) }] };
 }
 
-export async function getBom(client: SalesQueryStore, root: AgentOrderRoot, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+export async function getBom(client: SalesQueryStore, root: AgentOrderRoot, page = 1): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[]; total?: number }> {
   const orderNo = root.orderNo;
   const boms = await client.bom.findMany({ where: { orderNo, deletedAt: null }, orderBy: { version: "desc" }, select: { id: true, version: true, status: true } });
   if (!boms.length) return { data: [], sources: [] };
-  // BOM 版本可能多张，明细全量在 20 行内截断（capability.maxRows 兜底）——按版本新→旧展开。
+  // BOM 版本可能多张，明细取全量后按 20 行切页——按版本新→旧展开。
   const items = await client.bomItem.findMany({
     where: { bomId: { in: boms.map((bom) => bom.id) }, deletedAt: null },
     orderBy: [{ bomId: "asc" }, { sequence: "asc" }],
@@ -75,8 +75,7 @@ export async function getBom(client: SalesQueryStore, root: AgentOrderRoot, page
       approved_usage: item.approvedUsage === null || item.approvedUsage === undefined ? null : String(item.approvedUsage),
     };
   });
-  void page;
-  return { data, sources: [{ business_type: "sales_order", business_no: orderNo }] };
+  return { data: data.slice((page - 1) * 20, page * 20), sources: [{ business_type: "sales_order", business_no: orderNo }], total: data.length };
 }
 
 export async function getSalesReturns(client: SalesQueryStore, root: AgentOrderRoot, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
